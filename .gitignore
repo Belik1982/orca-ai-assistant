@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.install_state.json
+settings.json
+chats.json
+.DS_Store
+Thumbs.db
