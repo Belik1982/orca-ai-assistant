@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.3] - 2026-11-16
+### Fixed
+- Fixed GitHub Actions OrcaCloud publish workflow (`curl --form-string` for `metadata` JSON so semicolons/special chars in release notes do not break multipart encoding).
+
 ## [2.2.2] - 2026-11-16
 ### Added
 - Localized OrcaSlicer top tab name, Dock Panel script name, and G-code Audit capability name (`Orca AI Assistant`, `Orca AI: Dock Panel`, `Orca AI: G-code Audit` in English; localized equivalents in Ukrainian and Russian).

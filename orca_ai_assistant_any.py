@@ -1,6 +1,6 @@
 # /// script
 # name = "orca-ai-assistant"
-# version = "2.2.2"
+# version = "2.2.3"
 # requires-python = ">=3.12"
 # dependencies = []
 #
@@ -8,7 +8,7 @@
 # name = "Orca AI Assistant"
 # description = "Multilingual (EN / UA / RU) interactive AI assistant for OrcaSlicer: 3D model geometry & overhang analysis, slicer settings audit, 1-click parameter application, photo defect diagnostics, and G-code audit."
 # author = "Anton & Antigravity"
-# version = "2.2.2"
+# version = "2.2.3"
 # ///
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ if _GCODE_STEP is None:
 # ============================================================================
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "2.2.2"
+PLUGIN_VERSION = "2.2.3"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 TAB_ICON_PATH = Path(__file__).resolve().with_name(".orca_ai_assistant_icon.svg")
