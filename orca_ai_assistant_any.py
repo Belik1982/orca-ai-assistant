@@ -1,14 +1,14 @@
 # /// script
 # name = "orca-ai-assistant"
-# version = "2.2.1"
+# version = "2.2.2"
 # requires-python = ">=3.12"
 # dependencies = []
 #
 # [tool.orcaslicer.plugin]
-# name = "Orca AI Ассистент"
-# description = "Мультиязычный (RU / UA / EN) интерактивный ИИ-помощник для подготовки 3D-модели к печати, анализа геометрии и нависаний, аудита настроек слайсера и применения параметров в 1 клик. Поддерживает любые ИИ-модели по API (Claude 5.5/Fable 5.2, GPT-5.2, Gemini 3.8, OpenRouter, DeepSeek, GLM, Groq, Cerebras, Ollama, LM Studio)."
+# name = "Orca AI Assistant"
+# description = "Multilingual (EN / UA / RU) interactive AI assistant for OrcaSlicer: 3D model geometry & overhang analysis, slicer settings audit, 1-click parameter application, photo defect diagnostics, and G-code audit."
 # author = "Anton & Antigravity"
-# version = "2.2.1"
+# version = "2.2.2"
 # ///
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ if _GCODE_STEP is None:
 # ============================================================================
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "2.2.1"
+PLUGIN_VERSION = "2.2.2"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 TAB_ICON_PATH = Path(__file__).resolve().with_name(".orca_ai_assistant_icon.svg")
@@ -643,10 +643,23 @@ def default_favorites() -> list[dict[str, str]]:
     ]
 
 
+def detect_default_language() -> str:
+    try:
+        import locale
+        loc = (locale.getlocale()[0] or os.environ.get("LANG") or "").lower()
+        if loc.startswith(("uk", "ua")):
+            return "uk"
+        if loc.startswith("ru"):
+            return "ru"
+    except Exception:
+        pass
+    return "en"
+
+
 def default_settings() -> dict[str, Any]:
     return {
         "schema_version": 3,
-        "language": "ru",
+        "language": detect_default_language(),
         "provider": "anthropic",
         "model": "claude-opus-5-5",
         "temperature": 0.3,
@@ -3691,7 +3704,7 @@ class AssistantController:
                 return
             self._dock_panel = orca.host.ui.create_dock_panel(
                 html=UI_HTML,
-                title="🤖 Orca AI Assistant",
+                title=tr(lang, "🤖 Orca AI Ассистент", "🤖 Orca AI Асистент", "🤖 Orca AI Assistant"),
                 width=460,
                 height=740,
                 on_message=self.handle_message_on_ui,
@@ -3734,7 +3747,12 @@ class AssistantController:
                 "type": "context_updated",
                 "plate": plate,
                 "presets": presets,
-                "toast": tr(new_lang, "🇷🇺 Язык переключён на Русский", "🇺🇦 Мову перемкнено на Українську", "🇬🇧 Language switched to English"),
+                "toast": tr(
+                    new_lang,
+                    "🇷🇺 Язык переключён на Русский (перезапустите OrcaSlicer для обновления названия вкладки)",
+                    "🇺🇦 Мову перемкнено на Українську (перезапустіть OrcaSlicer для оновлення назви вкладки)",
+                    "🇬🇧 Language switched to English (restart OrcaSlicer to update the top tab name)",
+                ),
             })
             return
 
@@ -4018,7 +4036,8 @@ def get_controller() -> AssistantController:
 if _PAGES_BASE is not None:
     class OrcaAIAssistantPage(_PAGES_BASE):
         def get_name(self) -> str:
-            return "Orca AI Ассистент"
+            lang = get_controller().storage.get_lang()
+            return tr(lang, "Orca AI Ассистент", "Orca AI Асистент", "Orca AI Assistant")
 
         def get_ui(self) -> str:
             get_controller().register_page(self)
@@ -4042,7 +4061,8 @@ else:
 if _SCRIPT_BASE is not None:
     class OrcaAIDockScript(_SCRIPT_BASE):
         def get_name(self) -> str:
-            return "Orca AI: Панель у 3D-стола"
+            lang = get_controller().storage.get_lang()
+            return tr(lang, "Orca AI: Панель у 3D-стола", "Orca AI: Панель біля 3D-столу", "Orca AI: Dock Panel")
 
         def execute(self) -> Any:
             ctrl = get_controller()
@@ -4055,7 +4075,8 @@ else:
 if _PIPELINE_BASE is not None:
     class OrcaAIGcodeAuditor(_PIPELINE_BASE):
         def get_name(self) -> str:
-            return "Orca AI: Аудит G-code"
+            lang = get_controller().storage.get_lang()
+            return tr(lang, "Orca AI: Аудит G-code", "Orca AI: Аудит G-code", "Orca AI: G-code Audit")
 
         def execute(self, ctx: Any) -> Any:
             try:

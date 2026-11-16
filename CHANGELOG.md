@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.2] - 2026-11-16
+### Added
+- Localized OrcaSlicer top tab name, Dock Panel script name, and G-code Audit capability name (`Orca AI Assistant`, `Orca AI: Dock Panel`, `Orca AI: G-code Audit` in English; localized equivalents in Ukrainian and Russian).
+- Automatic default language detection from OS locale (`en` by default for international users, `uk` / `ru` for matching locales).
+- Unified international PEP 723 plugin name (`Orca AI Assistant`).
+
 ## [2.2.1] - 2026-11-16
 ### Fixed
 - Fixed applying filament settings in OrcaSlicer (`orca.host.preset.filament.begin_update(slot_number)` requires a 1-based slot index, whereas `process` and `printer` take no arguments).
