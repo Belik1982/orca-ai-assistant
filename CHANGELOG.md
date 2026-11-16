@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.1] - 2026-11-16
+### Fixed
+- Fixed applying filament settings in OrcaSlicer (`orca.host.preset.filament.begin_update(slot_number)` requires a 1-based slot index, whereas `process` and `printer` take no arguments).
+- Added automatic category resolution via `FLAT_SETTING_INFO` and category aliases so filament keys (e.g. `nozzle_temperature`, `hot_plate_temp`, `filament_flow_ratio`, `fan_max_speed`) are always routed to the `filament` preset editor even if an AI omits or mislabels `category`.
+- Fixed transaction reporting so `applied` items are recorded only after `tx.commit()` succeeds.
+
 ## [2.2.0] - 2026-11-14
 ### Added
 - Full multilingual support (**English**, **Ukrainian**, **Russian**) with an instant top-bar language switcher (`🇷🇺 RU` / `🇺🇦 UA` / `🇬🇧 EN`).

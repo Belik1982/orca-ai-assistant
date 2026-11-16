@@ -1,6 +1,6 @@
 # /// script
 # name = "orca-ai-assistant"
-# version = "2.2.0"
+# version = "2.2.1"
 # requires-python = ">=3.12"
 # dependencies = []
 #
@@ -8,7 +8,7 @@
 # name = "Orca AI Ассистент"
 # description = "Мультиязычный (RU / UA / EN) интерактивный ИИ-помощник для подготовки 3D-модели к печати, анализа геометрии и нависаний, аудита настроек слайсера и применения параметров в 1 клик. Поддерживает любые ИИ-модели по API (Claude 5.5/Fable 5.2, GPT-5.2, Gemini 3.8, OpenRouter, DeepSeek, GLM, Groq, Cerebras, Ollama, LM Studio)."
 # author = "Anton & Antigravity"
-# version = "2.2.0"
+# version = "2.2.1"
 # ///
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ if _GCODE_STEP is None:
 # ============================================================================
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "2.2.0"
+PLUGIN_VERSION = "2.2.1"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 TAB_ICON_PATH = Path(__file__).resolve().with_name(".orca_ai_assistant_icon.svg")
@@ -1253,24 +1253,38 @@ def build_full_context_markdown(plate: dict[str, Any], presets: dict[str, Any], 
 # 4. ПРИМЕНЕНИЕ НАСТРОЕК В ПРОФИЛЬ ORCASLICER И АНАЛИЗ G-CODE
 # ============================================================================
 
+def _normalize_preset_category(key: str, raw_cat: str) -> str:
+    # Если ключ известен в справочнике OrcaSlicer, его истинная категория надёжнее догадки ИИ
+    if key in FLAT_SETTING_INFO:
+        return FLAT_SETTING_INFO[key]["category"]
+    c = (raw_cat or "").strip().lower()
+    if c in ("filament", "filaments", "material", "materials"):
+        return "filament"
+    if c in ("printer", "printers", "machine", "extruder"):
+        return "printer"
+    return "process"
+
+
 def apply_settings_to_orcaslicer(changes: list[dict[str, Any]], lang: str = "ru") -> dict[str, Any]:
     l = norm_lang(lang)
     applied: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    by_cat: dict[str, list[dict[str, Any]]] = {"process": [], "filament": [], "printer": []}
+    by_target: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for ch in changes:
         if not isinstance(ch, dict):
             continue
         key = str(ch.get("key") or "").strip()
         if not key:
             continue
-        cat = str(ch.get("category") or "").strip().lower()
-        if cat not in by_cat:
-            cat = FLAT_SETTING_INFO.get(key, {}).get("category", "process")
-        by_cat.setdefault(cat, []).append(ch)
+        cat = _normalize_preset_category(key, str(ch.get("category") or ""))
+        try:
+            slot_num = max(1, int(ch.get("slot") or 1)) if cat == "filament" else 0
+        except Exception:
+            slot_num = 1 if cat == "filament" else 0
+        by_target.setdefault((cat, slot_num), []).append(ch)
 
-    for cat, items in by_cat.items():
+    for (cat, slot_num), items in by_target.items():
         if not items:
             continue
         try:
@@ -1283,16 +1297,22 @@ def apply_settings_to_orcaslicer(changes: list[dict[str, Any]], lang: str = "ru"
                     f"Preset editor '{cat}' is unavailable.",
                 ))
                 continue
-            tx = editor.begin_update()
+
+            # В OrcaSlicer 2.5+ filament.begin_update() принимает 1-based slot_number,
+            # а process/printer вызываются без аргументов.
+            tx = editor.begin_update(slot_num) if cat == "filament" else editor.begin_update()
+            pending: list[dict[str, Any]] = []
             for item in items:
                 k = str(item["key"]).strip()
                 v = str(item.get("value", "")).strip()
                 try:
                     tx.set(k, v)
-                    applied.append({"category": cat, "key": k, "value": v, "label": item.get("label", k)})
+                    pending.append({"category": cat, "key": k, "value": v, "label": item.get("label", k)})
                 except Exception as key_exc:
                     errors.append(f"{k} = {v}: {key_exc}")
-            tx.commit()
+            if pending:
+                tx.commit()
+                applied.extend(pending)
         except Exception as exc:
             errors.append(f"{cat}: {exc}")
 
