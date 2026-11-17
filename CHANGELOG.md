@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.1] - 2026-11-17
+### Fixed
+- Fixed Anthropic SSE streaming (`Accept: text/event-stream`, `content_block_start`/`content_block_delta` parsing, and in-stream `error` event handling).
+- Added automatic fallback to a non-streaming POST (`stream: false`) if any provider returns an empty SSE stream.
+
 ## [2.3.0] - 2026-11-17
 ### Added
 - **Real-time SSE Streaming (`stream: true`)**: AI replies now stream token-by-token into the chat bubble (supports OpenAI-compatible APIs including Gemini, OpenRouter, DeepSeek, Groq, Ollama, and Anthropic SSE), with automatic fallback to standard JSON if a proxy does not support SSE.

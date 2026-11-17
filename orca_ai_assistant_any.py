@@ -1,6 +1,6 @@
 # /// script
 # name = "orca-ai-assistant"
-# version = "2.3.0"
+# version = "2.3.1"
 # requires-python = ">=3.12"
 # dependencies = []
 #
@@ -8,7 +8,7 @@
 # name = "Orca AI Assistant"
 # description = "Multilingual (EN / UA / RU) interactive AI assistant for OrcaSlicer: streaming responses, fast Gemini thinking mode, 3D model geometry & overhang analysis, slicer settings audit, 1-click parameter application, photo defect diagnostics, and G-code audit."
 # author = "Anton & Antigravity"
-# version = "2.3.0"
+# version = "2.3.1"
 # ///
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ if _GCODE_STEP is None:
 # ============================================================================
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "2.3.0"
+PLUGIN_VERSION = "2.3.1"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 TAB_ICON_PATH = Path(__file__).resolve().with_name(".orca_ai_assistant_icon.svg")
@@ -1557,7 +1557,7 @@ def send_chat_completion(
         url = f"{clean_base}/messages"
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream, application/json" if use_stream else "application/json",
             "x-api-key": clean_key,
             "anthropic-version": "2023-06-01",
             "User-Agent": f"OrcaAIAssistant/{PLUGIN_VERSION}",
@@ -1658,6 +1658,7 @@ def send_chat_completion(
             acc_text: list[str] = []
             acc_reason: list[str] = []
             raw_non_sse: list[str] = []
+            sse_error: str = ""
             last_emit = 0.0
             saw_sse = is_sse
 
@@ -1683,13 +1684,24 @@ def send_chat_completion(
                         ev = json.loads(data_str)
                     except Exception:
                         continue
+                    if not isinstance(ev, dict):
+                        continue
+                    if ev.get("type") == "error" or ev.get("error"):
+                        err_obj = ev.get("error")
+                        sse_error = str(err_obj.get("message") if isinstance(err_obj, dict) else err_obj or ev)
+                        continue
                     if protocol == "anthropic":
                         ev_type = ev.get("type")
-                        if ev_type == "content_block_delta":
+                        if ev_type == "content_block_start":
+                            cb = ev.get("content_block") or {}
+                            if cb.get("type") == "text" and cb.get("text"):
+                                acc_text.append(str(cb.get("text") or ""))
+                        elif ev_type == "content_block_delta":
                             delta = ev.get("delta") or {}
-                            if delta.get("type") == "text_delta":
+                            dtype = delta.get("type")
+                            if dtype == "text_delta" or (not dtype and "text" in delta):
                                 acc_text.append(str(delta.get("text") or ""))
-                            elif delta.get("type") == "thinking_delta":
+                            elif dtype == "thinking_delta":
                                 acc_reason.append(str(delta.get("thinking") or ""))
                     else:
                         choices = ev.get("choices") or []
@@ -1721,7 +1733,7 @@ def send_chat_completion(
                     on_chunk(joined_text)
                 except Exception:
                     pass
-            return {"_streamed": True, "_reply": joined_text, "_reasoning": joined_reason}
+            return {"_streamed": True, "_reply": joined_text, "_reasoning": joined_reason, "_error": sse_error}
 
     api_err_prefix = tr(l, "Ошибка API", "Помилка API", "API Error")
     conn_err_prefix = tr(l, "Ошибка соединения с", "Помилка з'єднання з", "Connection error to")
@@ -1782,6 +1794,18 @@ def send_chat_completion(
             return {"ok": False, "error": f"{api_err_prefix} (HTTP {http_err.code}): {err_text}"}
     except Exception as exc:
         return {"ok": False, "error": f"{conn_err_prefix} {url}: {exc}"}
+
+    if parsed.get("_streamed") and parsed.get("_error") and not str(parsed.get("_reply") or "").strip():
+        return {"ok": False, "error": f"{api_err_prefix}: {parsed['_error']}"}
+
+    # Если SSE-стрим вернул пустой ответ (нестандартный прокси/модель), автоматически повторяем без stream
+    if parsed.get("_streamed") and not str(parsed.get("_reply") or "").strip() and not str(parsed.get("_reasoning") or "").strip():
+        body.pop("stream", None)
+        headers["Accept"] = "application/json"
+        try:
+            parsed = _do_post(body)
+        except Exception:
+            pass
 
     reply_text = ""
     reasoning_text = ""
