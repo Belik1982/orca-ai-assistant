@@ -1,14 +1,14 @@
 # /// script
 # name = "orca-ai-assistant"
-# version = "2.2.3"
+# version = "2.3.0"
 # requires-python = ">=3.12"
 # dependencies = []
 #
 # [tool.orcaslicer.plugin]
 # name = "Orca AI Assistant"
-# description = "Multilingual (EN / UA / RU) interactive AI assistant for OrcaSlicer: 3D model geometry & overhang analysis, slicer settings audit, 1-click parameter application, photo defect diagnostics, and G-code audit."
+# description = "Multilingual (EN / UA / RU) interactive AI assistant for OrcaSlicer: streaming responses, fast Gemini thinking mode, 3D model geometry & overhang analysis, slicer settings audit, 1-click parameter application, photo defect diagnostics, and G-code audit."
 # author = "Anton & Antigravity"
-# version = "2.2.3"
+# version = "2.3.0"
 # ///
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ if _GCODE_STEP is None:
 # ============================================================================
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "2.2.3"
+PLUGIN_VERSION = "2.3.0"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 TAB_ICON_PATH = Path(__file__).resolve().with_name(".orca_ai_assistant_icon.svg")
@@ -664,6 +664,7 @@ def default_settings() -> dict[str, Any]:
         "model": "claude-opus-5-5",
         "temperature": 0.3,
         "max_tokens": 4096,
+        "reasoning_effort": "low",
         "auto_attach_context": True,
         "enable_slicing_audit": False,
         "custom_user_instructions": "",
@@ -1525,6 +1526,8 @@ def send_chat_completion(
     custom_protocol: str = "openai",
     image_attachment: dict[str, str] | None = None,
     lang: str = "ru",
+    reasoning_effort: str = "low",
+    on_chunk: Any = None,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
     l = norm_lang(lang)
@@ -1533,6 +1536,8 @@ def send_chat_completion(
     clean_base = (base_url or preset["base_url"]).strip().rstrip("/")
     clean_key = (api_key or "").strip()
     clean_model = (model_id or preset["default_model"]).strip()
+    clean_effort = str(reasoning_effort or "").strip().lower()
+    use_stream = callable(on_chunk)
 
     if preset.get("needs_key") and not clean_key:
         return {
@@ -1586,6 +1591,8 @@ def send_chat_completion(
             "system": system_prompt,
             "messages": anth_messages,
         }
+        if use_stream:
+            body["stream"] = True
         # В современных моделях Claude (Opus/Sonnet/Haiku 5.x, Fable 5.2, Opus 4.7+) параметр temperature устарел (HTTP 400)
         if clean_model.startswith("claude-3"):
             body["temperature"] = float(temperature)
@@ -1593,7 +1600,7 @@ def send_chat_completion(
         url = f"{clean_base}/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream, application/json" if use_stream else "application/json",
             "User-Agent": f"OrcaAIAssistant/{PLUGIN_VERSION}",
         }
         if clean_key:
@@ -1625,17 +1632,96 @@ def send_chat_completion(
             "messages": oai_messages,
             "max_tokens": int(max_tokens or 4096),
         }
+        if use_stream:
+            body["stream"] = True
         model_lower = clean_model.lower()
         no_temp_prefixes = ("o1", "o3", "o4", "gpt-5", "claude-", "deepseek-reasoner", "qwq")
         if not model_lower.startswith(no_temp_prefixes) and "/claude-" not in model_lower and "/gpt-5" not in model_lower and "/o1" not in model_lower and "/o3" not in model_lower and "/o4" not in model_lower:
             body["temperature"] = float(temperature)
 
+        # Управление глубиной thinking/reasoning (главный способ ускорить Gemini 2.5/3.x и reasoning-модели)
+        if clean_effort in ("none", "minimal", "low", "medium", "high"):
+            if provider == "gemini" or "gemini" in model_lower or model_lower.startswith(("o1", "o3", "o4", "gpt-5")) or "/o1" in model_lower or "/o3" in model_lower or "/o4" in model_lower or "/gpt-5" in model_lower:
+                body["reasoning_effort"] = clean_effort
+
     def _do_post(payload_dict: dict[str, Any]) -> dict[str, Any]:
         data_bytes = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            raw_resp = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw_resp)
+            ctype = str(resp.headers.get("Content-Type") or "").lower()
+            is_sse = bool(payload_dict.get("stream")) and ("text/event-stream" in ctype or "event-stream" in ctype)
+            if not payload_dict.get("stream") and not is_sse:
+                raw_resp = resp.read().decode("utf-8", errors="replace")
+                return json.loads(raw_resp)
+
+            # Читаем построчно: если сервер ответил обычным JSON вместо SSE — тоже поддерживаем
+            acc_text: list[str] = []
+            acc_reason: list[str] = []
+            raw_non_sse: list[str] = []
+            last_emit = 0.0
+            saw_sse = is_sse
+
+            while True:
+                raw_line = resp.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                if not saw_sse and not line.startswith("data:") and not line.startswith("event:"):
+                    raw_non_sse.append(line)
+                    continue
+                if line.startswith("event:") or line.startswith(":"):
+                    saw_sse = True
+                    continue
+                if line.startswith("data:"):
+                    saw_sse = True
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        ev = json.loads(data_str)
+                    except Exception:
+                        continue
+                    if protocol == "anthropic":
+                        ev_type = ev.get("type")
+                        if ev_type == "content_block_delta":
+                            delta = ev.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                acc_text.append(str(delta.get("text") or ""))
+                            elif delta.get("type") == "thinking_delta":
+                                acc_reason.append(str(delta.get("thinking") or ""))
+                    else:
+                        choices = ev.get("choices") or []
+                        if choices and isinstance(choices[0], dict):
+                            delta = choices[0].get("delta") or {}
+                            c_piece = delta.get("content")
+                            if isinstance(c_piece, str) and c_piece:
+                                acc_text.append(c_piece)
+                            r_piece = delta.get("reasoning_content") or delta.get("reasoning")
+                            if isinstance(r_piece, str) and r_piece:
+                                acc_reason.append(r_piece)
+
+                    if use_stream and acc_text:
+                        now = time.monotonic()
+                        if now - last_emit >= 0.12:
+                            last_emit = now
+                            try:
+                                on_chunk("".join(acc_text))
+                            except Exception:
+                                pass
+
+            if not saw_sse and raw_non_sse:
+                return json.loads("\n".join(raw_non_sse))
+
+            joined_text = "".join(acc_text)
+            joined_reason = "".join(acc_reason)
+            if use_stream and joined_text:
+                try:
+                    on_chunk(joined_text)
+                except Exception:
+                    pass
+            return {"_streamed": True, "_reply": joined_text, "_reasoning": joined_reason}
 
     api_err_prefix = tr(l, "Ошибка API", "Помилка API", "API Error")
     conn_err_prefix = tr(l, "Ошибка соединения с", "Помилка з'єднання з", "Connection error to")
@@ -1661,6 +1747,12 @@ def send_chat_completion(
         if http_err.code == 400:
             if "temperature" in err_lower and "temperature" in body:
                 body.pop("temperature", None)
+                retried = True
+            if "reasoning_effort" in body and ("reasoning" in err_lower or "unknown" in err_lower or "unsupported" in err_lower or "invalid" in err_lower):
+                body.pop("reasoning_effort", None)
+                retried = True
+            if "stream" in body and "stream" in err_lower:
+                body.pop("stream", None)
                 retried = True
             if "max_completion_tokens" in err_lower and "max_tokens" in body:
                 body["max_completion_tokens"] = body.pop("max_tokens")
@@ -1693,7 +1785,10 @@ def send_chat_completion(
 
     reply_text = ""
     reasoning_text = ""
-    if protocol == "anthropic":
+    if parsed.get("_streamed"):
+        reply_text = str(parsed.get("_reply") or "")
+        reasoning_text = str(parsed.get("_reasoning") or "")
+    elif protocol == "anthropic":
         for block in parsed.get("content", []):
             if isinstance(block, dict):
                 if block.get("type") == "text":
@@ -2217,7 +2312,16 @@ html, body {
           </div>
           <div class="composer-controls">
             <span id="statusLine"></span>
-            <span data-i18n="tip_footer">Совет: язык интерфейса и ответов ИИ переключается кнопкой 🇷🇺 RU / 🇺🇦 UA / 🇬🇧 EN сверху!</span>
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <label for="chatEffortSelect" data-i18n="lbl_speed">⚡ Скорость ИИ:</label>
+              <select id="chatEffortSelect" class="ctrl-select" style="padding:2px 6px; font-size:11.5px;" onchange="onEffortChange(this.value)">
+                <option value="none" data-i18n="eff_none">⚡ Мгновенно (без thinking)</option>
+                <option value="low" data-i18n="eff_low">🚀 Быстро (low thinking)</option>
+                <option value="medium" data-i18n="eff_med">⚖️ Баланс (medium)</option>
+                <option value="high" data-i18n="eff_high">🧠 Глубоко (high)</option>
+                <option value="auto" data-i18n="eff_auto">Авто (по умолчанию API)</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -2401,6 +2505,12 @@ const I18N = {
     btn_thinking: "⏳ Думаю...",
     status_ready: "Готов к работе",
     status_working: "ИИ анализирует модель и настройки...",
+    lbl_speed: "⚡ Скорость / Thinking:",
+    eff_none: "⚡ Мгновенно (без thinking)",
+    eff_low: "🚀 Быстро (low thinking)",
+    eff_med: "⚖️ Баланс (medium)",
+    eff_high: "🧠 Глубоко (high)",
+    eff_auto: "Авто (по умолчанию API)",
     tip_footer: "Совет: язык интерфейса и ответов ИИ переключается кнопкой 🇷🇺 RU / 🇺🇦 UA / 🇬🇧 EN в верхней панели!",
     insp_plate_title: "📐 3D-Геометрия моделей на столе (анализ сетки и нависаний)",
     btn_rescan_plate: "🔄 Пересканировать стол",
@@ -2512,6 +2622,12 @@ const I18N = {
     btn_thinking: "⏳ Думаю...",
     status_ready: "Готовий до роботи",
     status_working: "ШІ аналізує модель та налаштування...",
+    lbl_speed: "⚡ Швидкість / Thinking:",
+    eff_none: "⚡ Миттєво (без thinking)",
+    eff_low: "🚀 Швидко (low thinking)",
+    eff_med: "⚖️ Баланс (medium)",
+    eff_high: "🧠 Глибоко (high)",
+    eff_auto: "Авто (за замовчуванням API)",
     tip_footer: "Порада: мова інтерфейсу та відповідей ШІ перемикається кнопкою 🇷🇺 RU / 🇺🇦 UA / 🇬🇧 EN у верхній панелі!",
     insp_plate_title: "📐 3D-Геометрія моделей на столі (аналіз сітки та нависань)",
     btn_rescan_plate: "🔄 Пересканувати стіл",
@@ -2623,6 +2739,12 @@ const I18N = {
     btn_thinking: "⏳ Thinking...",
     status_ready: "Ready",
     status_working: "AI is analyzing model & slicer settings...",
+    lbl_speed: "⚡ Speed / Thinking:",
+    eff_none: "⚡ Instant (no thinking)",
+    eff_low: "🚀 Fast (low thinking)",
+    eff_med: "⚖️ Balanced (medium)",
+    eff_high: "🧠 Deep (high)",
+    eff_auto: "Auto (API default)",
     tip_footer: "Tip: switch UI & AI response language anytime using the 🇷🇺 RU / 🇺🇦 UA / 🇬🇧 EN selector in the top bar!",
     insp_plate_title: "📐 Plated 3D Model Geometry (Mesh & Overhang Analysis)",
     btn_rescan_plate: "🔄 Rescan Plate",
@@ -2891,6 +3013,8 @@ function populateProvidersUI() {
 
   populateTopModelDropdown(curProv, STATE.settings.model || "");
   document.getElementById("chkAutoContext").checked = !!STATE.settings.auto_attach_context;
+  const effEl = document.getElementById("chatEffortSelect");
+  if (effEl) effEl.value = STATE.settings.reasoning_effort || "low";
   syncSettingsForm(curProv);
   syncInlineKeyBar();
   renderFavoritesBar();
@@ -3218,6 +3342,11 @@ function saveQuickToggle() {
   const autoCtx = document.getElementById("chkAutoContext").checked;
   STATE.settings.auto_attach_context = autoCtx;
   sendAction("save_settings", { settings: { auto_attach_context: autoCtx } });
+}
+
+function onEffortChange(val) {
+  STATE.settings.reasoning_effort = val || "low";
+  sendAction("save_settings", { settings: { reasoning_effort: STATE.settings.reasoning_effort } });
 }
 
 function fetchModelsFromApi(overrideKey, overrideUrl) {
@@ -3594,6 +3723,19 @@ function handleHostPayload(msg) {
     STATE.presets = msg.presets || STATE.presets;
     renderContextAndInspector();
     if (msg.toast) showToast(msg.toast);
+  } else if (msg.type === "stream_chunk") {
+    const mArea = document.getElementById("messagesArea");
+    let row = document.getElementById("streamingBubbleRow");
+    if (!row) {
+      row = document.createElement("div");
+      row.id = "streamingBubbleRow";
+      row.className = "msg-row assistant";
+      row.innerHTML = '<div class="msg-meta">🤖 ' + escapeHtml(msg.model || t("ai_label")) + ' ⏳</div><div class="msg-bubble" id="streamingBubbleBody"></div>';
+      mArea.appendChild(row);
+    }
+    const bodyEl = document.getElementById("streamingBubbleBody");
+    if (bodyEl) bodyEl.innerHTML = renderMarkdown(msg.text || "");
+    mArea.scrollTop = mArea.scrollHeight;
   } else if (msg.type === "chats_updated") {
     STATE.chats = msg.chats || STATE.chats;
     if (msg.plate) STATE.plate = msg.plate;
@@ -3923,6 +4065,9 @@ class AssistantController:
         base_url = str(settings.get("base_urls", {}).get(provider) or PROVIDER_PRESETS.get(provider, {}).get("base_url") or "")
         api_key = self.storage.resolve_effective_api_key(provider, model_id)
 
+        def _on_stream(partial_text: str) -> None:
+            self.emit({"type": "stream_chunk", "model": model_id, "text": partial_text})
+
         resp = send_chat_completion(
             provider=provider,
             base_url=base_url,
@@ -3935,6 +4080,8 @@ class AssistantController:
             custom_protocol=str(settings.get("custom_protocol") or "openai"),
             image_attachment=image_att,
             lang=lang,
+            reasoning_effort=str(settings.get("reasoning_effort") or "low"),
+            on_chunk=_on_stream,
         )
 
         if resp.get("ok"):

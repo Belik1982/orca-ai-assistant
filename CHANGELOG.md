@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.0] - 2026-11-17
+### Added
+- **Real-time SSE Streaming (`stream: true`)**: AI replies now stream token-by-token into the chat bubble (supports OpenAI-compatible APIs including Gemini, OpenRouter, DeepSeek, Groq, Ollama, and Anthropic SSE), with automatic fallback to standard JSON if a proxy does not support SSE.
+- **Fast Gemini / Thinking Speed Selector (`reasoning_effort`)**: Added a quick speed/thinking selector (`Instant / none`, `Fast / low`, `Balanced / medium`, `Deep / high`, `Auto`) right below the chat input. Defaulting to `low` drastically cuts Gemini 2.5/3.x response latency by limiting hidden thinking tokens, with automatic HTTP 400 fallback for models that do not use `reasoning_effort`.
+
 ## [2.2.3] - 2026-11-16
 ### Fixed
 - Fixed GitHub Actions OrcaCloud publish workflow (`curl --form-string` for `metadata` JSON so semicolons/special chars in release notes do not break multipart encoding).
