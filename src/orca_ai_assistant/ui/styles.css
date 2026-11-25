@@ -737,6 +737,31 @@ html, body {
 .usage-stat-lbl { font-size: 11px; color: var(--text-muted); }
 .usage-stat-num { font-size: 16px; font-weight: 800; }
 
+/* ==================== MCP SERVER SETTINGS CARD ==================== */
+.mcp-status-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text-muted);
+}
+.mcp-status-pill.running { border-color: var(--ok); color: var(--ok-text); background: rgba(16, 185, 129, 0.12); }
+.mcp-status-pill.error { border-color: var(--danger); color: var(--danger-text); background: rgba(239, 68, 68, 0.12); }
+.mcp-client-tabs { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
+.mcp-config-pre {
+  background: var(--bg-code); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; margin: 0; max-height: 170px; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; white-space: pre; color: var(--text);
+}
+.mcp-log-list {
+  max-height: 120px; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--bg-input); padding: 6px;
+  display: flex; flex-direction: column; gap: 4px; font-size: 11.5px;
+}
+.mcp-log-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 3px 6px; border-radius: 4px; background: var(--bg-card);
+}
+.mcp-log-item.err { border-left: 3px solid var(--danger); }
+
 /* ==================== WELCOME CARD & TOAST ==================== */
 .welcome-card { max-width: 680px; margin: auto; text-align: center; }
 .welcome-card h3 { margin-top: 0; color: var(--accent-text); }

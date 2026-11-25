@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-ai-assistant"
-version = "3.0.1"
-description = "Multilingual (EN / UA / RU) interactive AI co-pilot for OrcaSlicer 2.5+: 3D geometry & overhang analysis, deterministic Pre-Flight scorecard, multi-slot AMS awareness, Custom G-code diff & safety linter, 1-click apply with Undo & Preset Snapshots, Defect & Calibration wizards, and 13+ AI providers."
+version = "3.1.0"
+description = "Multilingual (EN / UA / RU) interactive AI co-pilot & built-in MCP server for OrcaSlicer 2.5+: 3D geometry & overhang analysis, deterministic Pre-Flight scorecard, multi-slot AMS awareness, Custom G-code diff & safety linter, 1-click apply with Undo & Preset Snapshots, Defect & Calibration wizards, and 13+ AI providers."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"

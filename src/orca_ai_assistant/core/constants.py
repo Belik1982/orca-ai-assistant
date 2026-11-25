@@ -4,8 +4,10 @@ import os
 from typing import Any
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "3.0.1"
+PLUGIN_VERSION = "3.1.0"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
+MCP_DEFAULT_HOST = "127.0.0.1"
+MCP_DEFAULT_PORT = 18765
 
 # Retired model IDs automatically migrated when loading settings (both active model and favorites)
 RETIRED_MODEL_MIGRATIONS: dict[str, str] = {
@@ -100,4 +102,10 @@ def default_settings(orca_app_info: dict[str, Any] | None = None) -> dict[str, A
         "custom_protocol": "openai",
         "favorite_models": default_favorites(),
         "cached_models": {},
+        "mcp_enabled": False,
+        "mcp_port": MCP_DEFAULT_PORT,
+        "mcp_require_auth": True,
+        "mcp_token": "",
+        "mcp_allow_write": True,
+        "mcp_allow_gcode_write": True,
     }

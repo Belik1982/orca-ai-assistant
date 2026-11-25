@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sys
 import threading
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import (
+    MCP_DEFAULT_PORT,
     PLUGIN_ID,
     RETIRED_MODEL_MIGRATIONS,
     default_favorites,
@@ -293,6 +295,12 @@ class StorageManager:
                             merged["max_tokens"] = iv
                     except (TypeError, ValueError):
                         pass
+            elif k == "mcp_port":
+                merged["mcp_port"] = self._sanitize_mcp_port(v)
+            elif k in ("mcp_enabled", "mcp_require_auth", "mcp_allow_write", "mcp_allow_gcode_write"):
+                merged[k] = bool(v)
+            elif k == "mcp_token":
+                merged["mcp_token"] = str(v or "").strip()
             else:
                 merged[k] = v
 
@@ -426,6 +434,12 @@ class StorageManager:
                                 self._settings["max_tokens"] = iv
                         except (TypeError, ValueError):
                             pass
+                elif k == "mcp_port":
+                    self._settings["mcp_port"] = self._sanitize_mcp_port(v)
+                elif k in ("mcp_enabled", "mcp_require_auth", "mcp_allow_write", "mcp_allow_gcode_write"):
+                    self._settings[k] = bool(v)
+                elif k == "mcp_token":
+                    self._settings["mcp_token"] = str(v or "").strip()
                 elif k == "model_api_keys" and isinstance(v, dict):
                     mkeys = self._settings.setdefault("model_api_keys", {})
                     for mk, mv in v.items():
@@ -440,6 +454,27 @@ class StorageManager:
                     self._settings[k] = copy.deepcopy(v)
             self._save_json(self._settings_file, self._settings)
             return copy.deepcopy(self._settings)
+
+    @staticmethod
+    def _sanitize_mcp_port(value: Any) -> int:
+        try:
+            port = int(value)
+            if 1024 <= port <= 65535:
+                return port
+        except (TypeError, ValueError):
+            pass
+        return MCP_DEFAULT_PORT
+
+    def ensure_mcp_token(self, force_new: bool = False) -> str:
+        """Return the configured MCP bearer token, generating and persisting one if missing/rotated."""
+        with self._lock:
+            existing = str(self._settings.get("mcp_token") or "").strip()
+            if existing and not force_new:
+                return existing
+            token = f"orca_mcp_{secrets.token_hex(16)}"
+            self._settings["mcp_token"] = token
+            self._save_json(self._settings_file, self._settings)
+            return token
 
     def resolve_effective_api_key(self, provider: str, model_id: str) -> str:
         with self._lock:

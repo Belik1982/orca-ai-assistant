@@ -488,6 +488,86 @@
         <button class="btn btn-primary" onclick="saveProviderConfig()" data-i18n="btn_save_cfg"></button>
       </div>
 
+      <div class="card" id="mcpCard">
+        <div class="card-title">
+          <span data-i18n="mcp_card_title"></span>
+          <div class="card-title-actions">
+            <span class="mcp-status-pill stopped" id="mcpStatusBadge" data-i18n="mcp_status_stopped"></span>
+            <button class="btn btn-sm" onclick="sendAction('mcp_get_status')" data-i18n="mcp_btn_refresh"></button>
+          </div>
+        </div>
+        <p class="hint-text" style="margin-top:0; margin-bottom:10px;" data-i18n="mcp_subtitle"></p>
+
+        <div class="grid-2">
+          <div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgMcpEnabled" />
+                <span data-i18n="mcp_chk_enabled"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="cfgMcpPort" data-i18n="mcp_lbl_port"></label>
+              <input type="number" min="1024" max="65535" id="cfgMcpPort" class="ctrl-input" value="18765" />
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgMcpRequireAuth" />
+                <span data-i18n="mcp_chk_require_auth"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="cfgMcpToken" data-i18n="mcp_lbl_token"></label>
+              <div class="input-with-btn">
+                <input type="password" id="cfgMcpToken" class="ctrl-input flex-1" readonly />
+                <button class="btn btn-sm" type="button" onclick="toggleKeyVisibility('cfgMcpToken')" data-i18n-title="tip_toggle_key_vis">👁</button>
+                <button class="btn btn-sm" type="button" onclick="copyMcpToken()" data-i18n-title="btn_copy_code">📋</button>
+                <button class="btn btn-sm" type="button" onclick="regenerateMcpToken()" data-i18n-title="mcp_tip_regen_token">🔄</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgMcpAllowWrite" />
+                <span data-i18n="mcp_chk_allow_write"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgMcpAllowGcodeWrite" />
+                <span data-i18n="mcp_chk_allow_gcode"></span>
+              </label>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" type="button" onclick="saveMcpConfig()" data-i18n="mcp_btn_save"></button>
+            </div>
+            <div class="warn-box danger" id="mcpErrorBox" style="display:none; margin-top:8px;"></div>
+          </div>
+
+          <div>
+            <div class="form-group">
+              <label data-i18n="mcp_lbl_endpoint"></label>
+              <div class="input-with-btn">
+                <input type="text" id="mcpEndpointDisplay" class="ctrl-input flex-1" readonly />
+                <button class="btn btn-sm" type="button" onclick="copyPlainText(document.getElementById('mcpEndpointDisplay').value)" data-i18n="btn_copy_code"></button>
+              </div>
+            </div>
+            <div class="mcp-client-tabs" id="mcpClientTabs">
+              <button type="button" class="btn btn-xs btn-primary" id="mcpCliBtn-antigravity" onclick="selectMcpClientPreset('antigravity')">Antigravity</button>
+              <button type="button" class="btn btn-xs" id="mcpCliBtn-cursor" onclick="selectMcpClientPreset('cursor')">Cursor / Claude Code</button>
+              <button type="button" class="btn btn-xs" id="mcpCliBtn-claude_desktop" onclick="selectMcpClientPreset('claude_desktop')">Claude Desktop (stdio)</button>
+            </div>
+            <pre class="mcp-config-pre" id="mcpConfigSnippet"></pre>
+            <div class="btn-row" style="margin-top:6px;">
+              <button class="btn btn-sm btn-primary" type="button" onclick="copyMcpConfig()" data-i18n="mcp_btn_copy_cfg"></button>
+            </div>
+            <div class="form-group" style="margin-top:10px;">
+              <label data-i18n="mcp_lbl_recent"></label>
+              <div class="mcp-log-list" id="mcpRecentCalls"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="card" id="usageCard">
         <div class="card-title"><span data-i18n="usage_title"></span></div>
         <div id="usageMeterBody" class="grid-2"></div>

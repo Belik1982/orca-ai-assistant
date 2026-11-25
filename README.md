@@ -1,15 +1,25 @@
 # 🤖 Orca AI Assistant
 
 [![OrcaSlicer](https://img.shields.io/badge/OrcaSlicer-2.5%2B-0f968b?style=flat-square)](https://www.orcaslicer.com/)
-[![Version](https://img.shields.io/badge/version-3.0.0-blue?style=flat-square)](https://github.com/Belik1982/orca-ai-assistant/releases)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue?style=flat-square)](https://github.com/Belik1982/orca-ai-assistant/releases)
 [![Languages](https://img.shields.io/badge/languages-EN%20%7C%20UA%20%7C%20RU-brightgreen?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
-Interactive, **multilingual (English / Українська / Русский)** AI co-pilot plugin for **OrcaSlicer 2.5+** combining real-time **`numpy` 3D geometry & overhang analysis**, a zero-token **Pre-Flight Scorecard**, **multi-slot AMS awareness**, **Custom G-code diff & safety linting**, **1-click reversible preset apply with Undo & Snapshots**, **Defect & Calibration Wizards**, and **13+ BYOK & local AI providers** with zero vendor lock-in.
+Interactive, **multilingual (English / Українська / Русский)** AI co-pilot and **built-in local MCP server** for **OrcaSlicer 2.5+** combining real-time **`numpy` 3D geometry & overhang analysis**, a zero-token **Pre-Flight Scorecard**, **multi-slot AMS awareness**, **Custom G-code diff & safety linting**, **1-click reversible preset apply with Undo & Snapshots**, **Defect & Calibration Wizards**, **13+ BYOK & local AI providers**, and direct control from external AI desktop clients (Antigravity, Cursor, Claude Code, Claude Desktop).
 
 ---
 
-## ✨ Key Features in v3.0.0
+## ✨ What's New in v3.1.0 — Built-in Local MCP Server
+
+- **🔌 Zero-Dependency Streamable HTTP MCP Server (`http://127.0.0.1:18765/mcp`)**:
+  - Enable in **Settings → Local MCP Server**, copy the ready-made JSON config snippet for **Antigravity (`serverUrl`)**, **Cursor / Claude Code (`url`)**, or **Claude Desktop (`npx mcp-remote`)**, and let external AI agents inspect and control your live OrcaSlicer session.
+  - **11 MCP Tools**: `get_scene_info`, `get_presets`, `get_setting`, `run_preflight_check`, `get_last_slice_report`, `apply_settings`, `get_custom_gcode`, `set_custom_gcode`, `undo_last_apply`, `manage_snapshots`, `show_notification`.
+  - **4 MCP Resources**: `orca://scene/context`, `orca://presets/current`, `orca://preflight/scorecard`, `orca://gcode/last_slice`.
+  - **Security & Safety Guardrails**: Off by default, binds strictly to `127.0.0.1`, validates `Host`/`Origin` against DNS rebinding, requires a Bearer token (auto-generated & rotatable), supports **Read-Only** / **Allow Write** / **Allow Custom G-code Write** toggles, pushes native OrcaSlicer notifications on external writes, and records every change for **1-click `↩ Undo`**.
+
+---
+
+## ✨ Core Features (v3.0+)
 
 - **🌐 Complete Multilingual UI & AI Responses (`EN` / `UA` / `RU`)**: Switch between **English**, **Ukrainian**, and **Russian** on the fly. Automatically detects OrcaSlicer's UI language (`orca.host.app_info()["language"]`) on first run and dynamically syncs with OrcaSlicer's light/dark theme (`data-orca-theme`).
 - **📌 Dedicated Compact Dock Panel (`data-view="dock"`) & Full Page Tab**:

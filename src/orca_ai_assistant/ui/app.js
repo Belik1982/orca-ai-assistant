@@ -61,8 +61,15 @@ const STATE = {
     base_urls: {},
     custom_protocol: "openai",
     favorite_models: [],
-    cached_models: {}
+    cached_models: {},
+    mcp_enabled: false,
+    mcp_port: 18765,
+    mcp_require_auth: true,
+    mcp_token: "",
+    mcp_allow_write: true,
+    mcp_allow_gcode_write: true
   },
+  mcp: null,
   chats: { active_id: "", sessions: [] },
   plate: { has_model: false, objects: [], warnings: [] },
   presets: { groups: {}, flat_values: {}, filament_slots: [], custom_gcode: {}, dirty_diff: [] },
@@ -93,6 +100,7 @@ let LAST_GCODE_MAP = {};
 let APPLIED_CARD_RECORDS = {};
 let PENDING_APPLY_CARD_ID = null;
 let STREAM_THINKING_OPEN = false;
+let ACTIVE_MCP_CLIENT = "antigravity";
 
 /* ==================== I18N ==================== */
 function curLang() {
@@ -235,7 +243,10 @@ function switchTab(tabName) {
     renderCalibrationStages();
     renderCalibrationInputs();
   }
-  if (tabName === "settings") renderUsageMeter();
+  if (tabName === "settings") {
+    renderUsageMeter();
+    renderMcpSection();
+  }
 }
 
 function switchWizardSub(sub) {
@@ -355,6 +366,7 @@ function populateProvidersUI() {
   renderFavoritesBar();
   renderModelsBrowser();
   renderUsageMeter();
+  renderMcpSection();
 }
 
 function populateModelDropdowns(provId, activeModelId) {
@@ -1659,6 +1671,180 @@ function renderUsageMeter() {
   body.innerHTML = makeBox(t("usage_month"), month) + makeBox(t("usage_total"), total);
 }
 
+/* ==================== TAB 5: LOCAL MCP SERVER ==================== */
+function _effectiveMcpState() {
+  const m = STATE.mcp || {};
+  const s = STATE.settings || {};
+  const port = m.port || s.mcp_port || 18765;
+  const url = m.url || ("http://127.0.0.1:" + port + "/mcp");
+  const token = (m.token !== undefined && m.token !== "") ? m.token : (s.mcp_token || "");
+  return {
+    running: !!m.running,
+    enabled: m.enabled !== undefined ? !!m.enabled : !!s.mcp_enabled,
+    port: port,
+    url: url,
+    require_auth: m.require_auth !== undefined ? !!m.require_auth : (s.mcp_require_auth !== false),
+    token: token,
+    allow_write: m.allow_write !== undefined ? !!m.allow_write : (s.mcp_allow_write !== false),
+    allow_gcode_write: m.allow_gcode_write !== undefined ? !!m.allow_gcode_write : (s.mcp_allow_gcode_write !== false),
+    error: m.error || "",
+    recent_calls: Array.isArray(m.recent_calls) ? m.recent_calls : []
+  };
+}
+
+function buildMcpClientConfigJson(clientKind) {
+  const info = _effectiveMcpState();
+  const kind = clientKind || ACTIVE_MCP_CLIENT || "antigravity";
+  const tokenDisplay = info.token || "<GENERATE_OR_ENABLE_FIRST>";
+  const authHeaderVal = "Bearer " + tokenDisplay;
+
+  if (kind === "cursor") {
+    const entry = { url: info.url };
+    if (info.require_auth) entry.headers = { Authorization: authHeaderVal };
+    return JSON.stringify({ mcpServers: { orcaslicer: entry } }, null, 2);
+  }
+
+  if (kind === "claude_desktop") {
+    const args = ["-y", "mcp-remote", info.url];
+    if (info.require_auth) {
+      args.push("--header", "Authorization:" + authHeaderVal);
+    }
+    return JSON.stringify({
+      mcpServers: {
+        orcaslicer: {
+          command: "npx",
+          args: args
+        }
+      }
+    }, null, 2);
+  }
+
+  // Antigravity (serverUrl)
+  const agyEntry = { serverUrl: info.url };
+  if (info.require_auth) agyEntry.headers = { Authorization: authHeaderVal };
+  return JSON.stringify({ mcpServers: { orcaslicer: agyEntry } }, null, 2);
+}
+
+function renderMcpSection() {
+  const info = _effectiveMcpState();
+  const badge = document.getElementById("mcpStatusBadge");
+  if (badge) {
+    if (info.error) {
+      badge.className = "mcp-status-pill error";
+      badge.textContent = "⚠ " + t("mcp_status_error");
+    } else if (info.running) {
+      badge.className = "mcp-status-pill running";
+      badge.textContent = "🟢 " + t("mcp_status_running", { port: info.port });
+    } else {
+      badge.className = "mcp-status-pill stopped";
+      badge.textContent = "⚪ " + t("mcp_status_stopped");
+    }
+  }
+
+  const setChk = function (id, val) {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!val;
+  };
+  const setVal = function (id, val) {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  };
+
+  setChk("cfgMcpEnabled", info.enabled);
+  setVal("cfgMcpPort", info.port);
+  setChk("cfgMcpRequireAuth", info.require_auth);
+  setVal("cfgMcpToken", info.token);
+  setChk("cfgMcpAllowWrite", info.allow_write);
+  setChk("cfgMcpAllowGcodeWrite", info.allow_gcode_write);
+  setVal("mcpEndpointDisplay", info.url);
+
+  const errBox = document.getElementById("mcpErrorBox");
+  if (errBox) {
+    if (info.error) {
+      errBox.style.display = "block";
+      errBox.textContent = info.error;
+    } else {
+      errBox.style.display = "none";
+      errBox.textContent = "";
+    }
+  }
+
+  ["antigravity", "cursor", "claude_desktop"].forEach(function (k) {
+    const b = document.getElementById("mcpCliBtn-" + k);
+    if (b) b.classList.toggle("btn-primary", k === ACTIVE_MCP_CLIENT);
+  });
+
+  const pre = document.getElementById("mcpConfigSnippet");
+  if (pre) pre.textContent = buildMcpClientConfigJson(ACTIVE_MCP_CLIENT);
+
+  const logBox = document.getElementById("mcpRecentCalls");
+  if (logBox) {
+    if (!info.recent_calls.length) {
+      logBox.innerHTML = '<div class="hint-text">' + escapeHtml(t("mcp_recent_empty")) + "</div>";
+    } else {
+      logBox.innerHTML = "";
+      info.recent_calls.forEach(function (c) {
+        const row = document.createElement("div");
+        row.className = "mcp-log-item" + (c.ok ? "" : " err");
+        const namePart = c.tool ? (c.method + " · " + c.tool) : c.method;
+        row.innerHTML =
+          '<span><strong>' + escapeHtml(namePart || "") + "</strong>" +
+          (c.summary ? (" — " + escapeHtml(c.summary)) : "") + "</span>" +
+          '<span style="color:var(--text-muted)">' + escapeHtml(c.time || "") + "</span>";
+        logBox.appendChild(row);
+      });
+    }
+  }
+}
+
+function selectMcpClientPreset(kind) {
+  ACTIVE_MCP_CLIENT = kind || "antigravity";
+  renderMcpSection();
+}
+
+function copyMcpConfig() {
+  copyPlainText(buildMcpClientConfigJson(ACTIVE_MCP_CLIENT));
+}
+
+function copyMcpToken() {
+  const info = _effectiveMcpState();
+  if (!info.token) {
+    showToast(t("mcp_toast_enable_first"), true);
+    return;
+  }
+  copyPlainText(info.token);
+}
+
+function regenerateMcpToken() {
+  sendAction("mcp_regenerate_token");
+}
+
+function saveMcpConfig() {
+  const enabled = !!(document.getElementById("cfgMcpEnabled") || {}).checked;
+  const rawPort = parseInt(((document.getElementById("cfgMcpPort") || {}).value || "18765"), 10);
+  const port = (!isNaN(rawPort) && rawPort >= 1024 && rawPort <= 65535) ? rawPort : 18765;
+  const requireAuth = !!(document.getElementById("cfgMcpRequireAuth") || {}).checked;
+  const allowWrite = !!(document.getElementById("cfgMcpAllowWrite") || {}).checked;
+  const allowGcode = !!(document.getElementById("cfgMcpAllowGcodeWrite") || {}).checked;
+
+  STATE.settings.mcp_enabled = enabled;
+  STATE.settings.mcp_port = port;
+  STATE.settings.mcp_require_auth = requireAuth;
+  STATE.settings.mcp_allow_write = allowWrite;
+  STATE.settings.mcp_allow_gcode_write = allowGcode;
+
+  sendAction("save_settings", {
+    settings: {
+      mcp_enabled: enabled,
+      mcp_port: port,
+      mcp_require_auth: requireAuth,
+      mcp_allow_write: allowWrite,
+      mcp_allow_gcode_write: allowGcode
+    }
+  });
+  showToast(t("mcp_toast_saved"));
+}
+
 /* ==================== CHAT SESSIONS & MESSAGES ==================== */
 function createNewChat() {
   sendAction("new_chat");
@@ -2374,6 +2560,7 @@ function _applyOptionalStateFields(msg) {
   if (msg.snapshots) STATE.snapshots = msg.snapshots;
   if (msg.apply_history) STATE.apply_history = msg.apply_history;
   if (msg.usage) STATE.usage = msg.usage;
+  if (msg.mcp) STATE.mcp = msg.mcp;
 }
 
 function handleHostPayload(msg) {
@@ -2534,6 +2721,12 @@ function handleHostPayload(msg) {
     if (msg.toast) showToast(msg.toast, !!msg.is_error);
   } else if (msg.type === "calibration_result") {
     renderCalibrationResult(msg.result || msg);
+  } else if (msg.type === "mcp_status_updated") {
+    if (msg.settings) {
+      STATE.settings = Object.assign({}, STATE.settings, msg.settings);
+    }
+    if (msg.mcp) STATE.mcp = msg.mcp;
+    renderMcpSection();
   } else if (msg.type === "toast") {
     if (msg.clear_busy) {
       ACTIVE_REQUEST_ID = null;

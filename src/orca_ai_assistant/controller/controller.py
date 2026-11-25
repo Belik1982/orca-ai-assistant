@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import copy
 import datetime as dt
 import json
@@ -20,6 +21,8 @@ except Exception:  # pragma: no cover - running outside OrcaSlicer host
 
 from orca_ai_assistant.controller.settings_parser import extract_suggested_settings
 from orca_ai_assistant.core.constants import (
+    MCP_DEFAULT_HOST,
+    MCP_DEFAULT_PORT,
     PLUGIN_ID,
     PLUGIN_VERSION,
     detect_default_language,
@@ -27,6 +30,7 @@ from orca_ai_assistant.core.constants import (
     tr,
 )
 from orca_ai_assistant.core.storage import StorageManager, get_plugin_storage_dir
+from orca_ai_assistant.mcp.server import OrcaMCPServer
 from orca_ai_assistant.orca_bridge.enums import CUSTOM_GCODE_KEYS
 from orca_ai_assistant.orca_bridge.gcode_analyzer import (
     compute_slice_delta,
@@ -201,6 +205,9 @@ class AssistantController:
 
         self._active_requests: dict[str, CancelToken] = {}
         self._request_chat_map: dict[str, str] = {}
+        self._mcp_lock = threading.RLock()
+        self._mcp_server: OrcaMCPServer | None = None
+        self._mcp_atexit_registered: bool = False
 
     @property
     def _page_instances(self) -> list[Any]:
@@ -484,11 +491,107 @@ class AssistantController:
             "snapshots": self.storage.get_snapshots(),
             "apply_history": self.storage.get_apply_history(),
             "usage": self.storage.get_usage(),
+            "mcp": self.get_mcp_status(),
             "defects": DEFECT_CATALOG,
             "active_request_id": active_req_id,
             "active_stream_chat_id": active_chat_id if active_req_id else any_stream_chat,
             "any_active_request_id": any_req_id,
         }
+
+    # ------------------------------------------------------------------
+    # MCP Server lifecycle
+    # ------------------------------------------------------------------
+
+    def get_mcp_status(self) -> dict[str, Any]:
+        with self._mcp_lock:
+            srv = self._mcp_server
+        if srv is not None:
+            return srv.get_status()
+        settings = self.storage.get_settings()
+        try:
+            port = int(settings.get("mcp_port") or MCP_DEFAULT_PORT)
+        except (TypeError, ValueError):
+            port = MCP_DEFAULT_PORT
+        return {
+            "running": False,
+            "enabled": bool(settings.get("mcp_enabled", False)),
+            "host": MCP_DEFAULT_HOST,
+            "port": port,
+            "url": f"http://{MCP_DEFAULT_HOST}:{port}/mcp",
+            "health_url": f"http://{MCP_DEFAULT_HOST}:{port}/health",
+            "require_auth": bool(settings.get("mcp_require_auth", True)),
+            "token": str(settings.get("mcp_token") or ""),
+            "allow_write": bool(settings.get("mcp_allow_write", True)),
+            "allow_gcode_write": bool(settings.get("mcp_allow_gcode_write", True)),
+            "error": "",
+            "recent_calls": [],
+        }
+
+    def sync_mcp_server(self, emit_update: bool = True) -> dict[str, Any]:
+        settings = self.storage.get_settings()
+        enabled = bool(settings.get("mcp_enabled", False))
+        require_auth = bool(settings.get("mcp_require_auth", True))
+        if (enabled or require_auth) and not str(settings.get("mcp_token") or "").strip():
+            self.storage.ensure_mcp_token(force_new=False)
+            settings = self.storage.get_settings()
+
+        try:
+            port = int(settings.get("mcp_port") or MCP_DEFAULT_PORT)
+        except (TypeError, ValueError):
+            port = MCP_DEFAULT_PORT
+
+        with self._mcp_lock:
+            if not enabled:
+                if self._mcp_server is not None:
+                    self._mcp_server.stop()
+                    self._mcp_server = None
+            else:
+                if (
+                    self._mcp_server is None
+                    or not self._mcp_server.is_running
+                    or self._mcp_server.requested_port != port
+                ):
+                    if self._mcp_server is not None:
+                        self._mcp_server.stop()
+                    srv = OrcaMCPServer(self, host=MCP_DEFAULT_HOST, port=port)
+                    srv.start()
+                    self._mcp_server = srv
+                    if not self._mcp_atexit_registered:
+                        atexit.register(self.shutdown_mcp_server)
+                        self._mcp_atexit_registered = True
+
+        status = self.get_mcp_status()
+        if emit_update:
+            self.emit({
+                "type": "mcp_status_updated",
+                "mcp": status,
+                "settings": settings,
+            })
+        return status
+
+    def regenerate_mcp_token(self) -> dict[str, Any]:
+        self.storage.ensure_mcp_token(force_new=True)
+        settings = self.storage.get_settings()
+        status = self.get_mcp_status()
+        self.emit({
+            "type": "settings_updated",
+            "settings": settings,
+            "mcp": status,
+            "usage": self.storage.get_usage(),
+        })
+        self.emit({
+            "type": "mcp_status_updated",
+            "mcp": status,
+            "settings": settings,
+        })
+        return status
+
+    def shutdown_mcp_server(self) -> None:
+        with self._mcp_lock:
+            srv = self._mcp_server
+            self._mcp_server = None
+        if srv is not None:
+            srv.stop()
 
     def _emit_chats_updated(
         self,
@@ -652,26 +755,50 @@ class AssistantController:
                 req_id,
             )
 
-    def _push_preflight_notification(self, danger_count: int, preflight: dict[str, Any], lang: str) -> None:
+    def push_native_notification(
+        self,
+        message: str,
+        level: str = "info",
+        *,
+        link_text: str = "",
+        on_click: Any = None,
+    ) -> bool:
+        """Display a native OrcaSlicer notification banner when host UI is available."""
         if orca is None or not hasattr(orca, "host") or not hasattr(orca.host, "ui"):
-            return
+            return False
         push_fn = getattr(orca.host.ui, "push_notification", None)
         if not callable(push_fn):
-            return
+            return False
+        lvl_key = str(level or "info").strip().lower()
         try:
             level_cls = getattr(orca.host.ui, "NotificationLevel", None) or getattr(orca, "NotificationLevel", None)
-            level = getattr(level_cls, "Warning", 5) if level_cls is not None else 5
-            score = preflight.get("score", 0)
-            msg = tr(
-                lang,
-                f"Orca AI Pre-Flight: найдено критических проблем — {danger_count} (оценка {score}/100).",
-                f"Orca AI Pre-Flight: знайдено критичних проблем — {danger_count} (оцінка {score}/100).",
-                f"Orca AI Pre-Flight: {danger_count} critical issue(s) detected (score {score}/100).",
-            )
-            link_text = tr(lang, "Открыть Orca AI", "Відкрити Orca AI", "Open Orca AI")
-            push_fn(level, msg, link_text, self.open_dock_panel)
+            if lvl_key == "error":
+                lvl_val = getattr(level_cls, "Error", getattr(level_cls, "Warning", 6)) if level_cls is not None else 6
+            elif lvl_key in ("warn", "warning"):
+                lvl_val = getattr(level_cls, "Warning", 5) if level_cls is not None else 5
+            else:
+                lvl_val = getattr(level_cls, "Info", getattr(level_cls, "Regular", 1)) if level_cls is not None else 1
+            if link_text or on_click is not None:
+                try:
+                    push_fn(lvl_val, message, link_text or "", on_click or self.open_dock_panel)
+                    return True
+                except TypeError:
+                    pass
+            push_fn(lvl_val, message)
+            return True
         except Exception:
-            pass
+            return False
+
+    def _push_preflight_notification(self, danger_count: int, preflight: dict[str, Any], lang: str) -> None:
+        score = preflight.get("score", 0)
+        msg = tr(
+            lang,
+            f"Orca AI Pre-Flight: найдено критических проблем — {danger_count} (оценка {score}/100).",
+            f"Orca AI Pre-Flight: знайдено критичних проблем — {danger_count} (оцінка {score}/100).",
+            f"Orca AI Pre-Flight: {danger_count} critical issue(s) detected (score {score}/100).",
+        )
+        link_text = tr(lang, "Открыть Orca AI", "Відкрити Orca AI", "Open Orca AI")
+        self.push_native_notification(msg, level="warning", link_text=link_text, on_click=self.open_dock_panel)
 
     # ------------------------------------------------------------------
     # Main UI message dispatcher (runs on OrcaSlicer UI thread)
@@ -702,12 +829,55 @@ class AssistantController:
         if action == "save_settings":
             patch = data.get("settings")
             if isinstance(patch, dict):
+                has_mcp_keys = any(str(k).startswith("mcp_") for k in patch.keys())
                 updated = self.storage.update_settings(patch)
-                self.emit({
+                payload: dict[str, Any] = {
                     "type": "settings_updated",
                     "settings": updated,
                     "usage": self.storage.get_usage(),
-                })
+                }
+                if has_mcp_keys:
+                    mcp_status = self.sync_mcp_server(emit_update=False)
+                    payload["mcp"] = mcp_status
+                    payload["settings"] = self.storage.get_settings()
+                self.emit(payload)
+                if has_mcp_keys:
+                    self.emit({
+                        "type": "mcp_status_updated",
+                        "mcp": payload["mcp"],
+                        "settings": payload["settings"],
+                    })
+            return
+
+        if action == "mcp_get_status":
+            self.emit({
+                "type": "mcp_status_updated",
+                "mcp": self.get_mcp_status(),
+                "settings": self.storage.get_settings(),
+            })
+            return
+
+        if action == "mcp_regenerate_token":
+            self.regenerate_mcp_token()
+            self.emit({
+                "type": "toast",
+                "text": tr(
+                    lang,
+                    "Новый MCP-токен сгенерирован.",
+                    "Новий MCP-токен згенеровано.",
+                    "New MCP token generated.",
+                ),
+            })
+            return
+
+        if action == "mcp_restart":
+            with self._mcp_lock:
+                if self._mcp_server is not None:
+                    self._mcp_server.stop()
+                    self._mcp_server = None
+            status = self.sync_mcp_server(emit_update=True)
+            if status.get("error"):
+                self.emit({"type": "toast", "text": f"MCP error: {status['error']}", "is_error": True})
             return
 
         if action == "open_dock":
@@ -817,22 +987,7 @@ class AssistantController:
             name = str(data.get("name") or "").strip()
             if not name:
                 name = dt.datetime.now().strftime("Snapshot %d.%m %H:%M")
-            try:
-                snap_data = capture_full_preset_snapshot(lang)
-            except Exception:
-                _, cached_presets, _, _, _ = self._get_cached_snapshots()
-                snap_data = copy.deepcopy(cached_presets)
-            snapshots = self.storage.save_snapshot(name, snap_data)
-            self.emit({
-                "type": "snapshots_updated",
-                "snapshots": snapshots,
-                "toast": tr(
-                    lang,
-                    f"Снимок пресетов «{name}» сохранён",
-                    f"Знімок пресетів «{name}» збережено",
-                    f"Preset snapshot '{name}' saved",
-                ),
-            })
+            self.save_snapshot_sync(name)
             return
 
         if action == "delete_snapshot":
@@ -1617,16 +1772,39 @@ class AssistantController:
         finally:
             self._finish_request(request_id)
 
-    def _worker_apply_settings(
+    def save_snapshot_sync(self, name: str) -> list[dict[str, Any]]:
+        lang = self.storage.get_lang()
+        clean_name = str(name or "").strip() or dt.datetime.now().strftime("Snapshot %d.%m %H:%M")
+        try:
+            snap_data = capture_full_preset_snapshot(lang)
+        except Exception:
+            _, cached_presets, _, _, _ = self._get_cached_snapshots()
+            snap_data = copy.deepcopy(cached_presets)
+        snapshots = self.storage.save_snapshot(clean_name, snap_data)
+        self.emit({
+            "type": "snapshots_updated",
+            "snapshots": snapshots,
+            "toast": tr(
+                lang,
+                f"Снимок пресетов «{clean_name}» сохранён",
+                f"Знімок пресетів «{clean_name}» збережено",
+                f"Preset snapshot '{clean_name}' saved",
+            ),
+        })
+        return snapshots
+
+    def apply_changes_sync(
         self,
         changes: list[dict[str, Any]],
+        *,
         allow_gcode: bool = False,
         source: str = "chat",
         card_id: str = "",
-    ) -> None:
+        notify_host: bool = False,
+    ) -> dict[str, Any]:
         lang = self.storage.get_lang()
         if not isinstance(changes, list) or not changes:
-            self.emit({
+            result = {
                 "type": "settings_applied",
                 "ok": False,
                 "card_id": card_id,
@@ -1641,10 +1819,11 @@ class AssistantController:
                 ],
                 "warnings": [],
                 "apply_history": self.storage.get_apply_history(),
-            })
-            return
+            }
+            self.emit(result)
+            return result
 
-        # Safety gate: Custom G-code requires explicit diff confirmation
+        # Safety gate: Custom G-code requires explicit confirmation
         gcode_keys_in_batch = [
             str(ch.get("key") or "")
             for ch in changes
@@ -1657,7 +1836,7 @@ class AssistantController:
                 f"Зміна користувацького G-code ({', '.join(gcode_keys_in_batch)}) потребує явного підтвердження diff!",
                 f"Modifying custom G-code ({', '.join(gcode_keys_in_batch)}) requires explicit diff confirmation!",
             )
-            self.emit({
+            result = {
                 "type": "settings_applied",
                 "ok": False,
                 "card_id": card_id,
@@ -1666,8 +1845,9 @@ class AssistantController:
                 "warnings": [],
                 "gcode_confirmation_required": True,
                 "apply_history": self.storage.get_apply_history(),
-            })
-            return
+            }
+            self.emit(result)
+            return result
 
         # Record baseline slice before modifying presets so next slice computes delta
         with self._lock:
@@ -1697,7 +1877,7 @@ class AssistantController:
 
         presets, preflight = self._refresh_presets_and_preflight_after_apply(applied, lang)
 
-        self.emit({
+        payload = {
             "type": "settings_applied",
             "ok": bool(res.get("ok")),
             "card_id": card_id,
@@ -1708,13 +1888,50 @@ class AssistantController:
             "apply_history": apply_history,
             "presets": presets,
             "preflight": preflight,
-        })
+        }
+        self.emit(payload)
 
-    def _worker_undo_apply(
+        if notify_host and applied:
+            preview = ", ".join(str(a.get("key") or "") for a in applied[:3] if a.get("key"))
+            if len(applied) > 3:
+                preview += f" (+{len(applied) - 3})"
+            msg = tr(
+                lang,
+                f"Orca AI MCP применил {len(applied)} парам. ({preview}). Доступен откат Undo.",
+                f"Orca AI MCP застосував {len(applied)} парам. ({preview}). Доступний відкат Undo.",
+                f"Orca AI MCP applied {len(applied)} setting(s) ({preview}). Reversible via Undo.",
+            )
+            self.push_native_notification(
+                msg,
+                level="info",
+                link_text=tr(lang, "Открыть Orca AI", "Відкрити Orca AI", "Open Orca AI"),
+                on_click=self.open_dock_panel,
+            )
+
+        return payload
+
+    def _worker_apply_settings(
+        self,
+        changes: list[dict[str, Any]],
+        allow_gcode: bool = False,
+        source: str = "chat",
+        card_id: str = "",
+    ) -> None:
+        self.apply_changes_sync(
+            changes,
+            allow_gcode=allow_gcode,
+            source=source,
+            card_id=card_id,
+            notify_host=False,
+        )
+
+    def undo_apply_sync(
         self,
         record_id: str | None = None,
+        *,
         chat_id: str | None = None,
-    ) -> None:
+        notify_host: bool = False,
+    ) -> dict[str, Any]:
         lang = self.storage.get_lang()
         record = self.storage.pop_apply_record(record_id)
         if not record:
@@ -1727,12 +1944,8 @@ class AssistantController:
             if chat_id:
                 chats = self.storage.append_message(chat_id, "assistant", msg, extra={"model": "local"})
                 self._emit_chats_updated(chats, active_request_id="")
-            self.emit({
-                "type": "toast",
-                "text": msg,
-                "is_error": True,
-            })
-            return
+            self.emit({"type": "toast", "text": msg, "is_error": True})
+            return {"ok": False, "applied": [], "errors": [msg], "warnings": []}
 
         rollback = record.get("rollback_changes") or []
         if not rollback:
@@ -1746,18 +1959,17 @@ class AssistantController:
                 chats = self.storage.append_message(chat_id, "assistant", msg, extra={"model": "local"})
                 self._emit_chats_updated(chats, active_request_id="")
             self.emit({"type": "toast", "text": msg, "is_error": True})
-            return
+            return {"ok": False, "applied": [], "errors": [msg], "warnings": []}
 
         res = apply_settings_to_orcaslicer(rollback, lang=lang)
         applied = res.get("applied") if isinstance(res.get("applied"), list) else []
         if not res.get("ok") and not applied:
-            # Re-push record if rollback failed completely so user doesn't lose it
             self.storage.push_apply_record(record)
 
         presets, preflight = self._refresh_presets_and_preflight_after_apply(applied, lang)
         apply_history = self.storage.get_apply_history()
 
-        self.emit({
+        payload = {
             "type": "settings_applied",
             "ok": bool(res.get("ok")),
             "undone": True,
@@ -1768,7 +1980,17 @@ class AssistantController:
             "apply_history": apply_history,
             "presets": presets,
             "preflight": preflight,
-        })
+        }
+        self.emit(payload)
+
+        if notify_host and applied:
+            msg = tr(
+                lang,
+                f"Orca AI MCP откатил изменения ({len(applied)} парам.).",
+                f"Orca AI MCP відкотив зміни ({len(applied)} парам.).",
+                f"Orca AI MCP reverted {len(applied)} setting(s).",
+            )
+            self.push_native_notification(msg, level="info")
 
         if chat_id:
             if res.get("ok"):
@@ -1788,29 +2010,45 @@ class AssistantController:
             chats = self.storage.append_message(chat_id, "assistant", summary_txt, extra={"model": "local"})
             self._emit_chats_updated(chats, active_request_id="")
 
-    def _worker_restore_snapshot(self, snap_id: str) -> None:
+        return payload
+
+    def _worker_undo_apply(
+        self,
+        record_id: str | None = None,
+        chat_id: str | None = None,
+    ) -> None:
+        self.undo_apply_sync(record_id, chat_id=chat_id, notify_host=False)
+
+    def restore_snapshot_sync(self, snap_id: str, *, notify_host: bool = False) -> dict[str, Any]:
         lang = self.storage.get_lang()
         snapshots = self.storage.get_snapshots()
         target = next((s for s in snapshots if s.get("id") == snap_id), None)
         if not target:
-            self.emit({
-                "type": "toast",
-                "text": tr(lang, "Снимок пресетов не найден.", "Знімок пресетів не знайдено.", "Preset snapshot not found."),
-                "is_error": True,
-            })
-            return
+            err = tr(lang, "Снимок пресетов не найден.", "Знімок пресетів не знайдено.", "Preset snapshot not found.")
+            self.emit({"type": "toast", "text": err, "is_error": True})
+            return {"ok": False, "applied": [], "errors": [err], "warnings": []}
 
         snap_data = target.get("data") if isinstance(target.get("data"), dict) else {}
         changes = self._snapshot_data_to_changes(snap_data)
         if not changes:
-            self.emit({
-                "type": "toast",
-                "text": tr(lang, "Снимок не содержит параметров для восстановления.", "Знімок не містить параметрів для відновлення.", "Snapshot contains no settings to restore."),
-                "is_error": True,
-            })
-            return
+            err = tr(
+                lang,
+                "Снимок не содержит параметров для восстановления.",
+                "Знімок не містить параметрів для відновлення.",
+                "Snapshot contains no settings to restore.",
+            )
+            self.emit({"type": "toast", "text": err, "is_error": True})
+            return {"ok": False, "applied": [], "errors": [err], "warnings": []}
 
-        self._worker_apply_settings(changes, allow_gcode=True, source=f"snapshot:{target.get('name', snap_id)}")
+        return self.apply_changes_sync(
+            changes,
+            allow_gcode=True,
+            source=f"snapshot:{target.get('name', snap_id)}",
+            notify_host=notify_host,
+        )
+
+    def _worker_restore_snapshot(self, snap_id: str) -> None:
+        self.restore_snapshot_sync(snap_id, notify_host=False)
 
     @staticmethod
     def _snapshot_data_to_changes(snap_data: dict[str, Any]) -> list[dict[str, Any]]:

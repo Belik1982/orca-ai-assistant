@@ -20,14 +20,14 @@ from pathlib import Path
 
 PLUGIN_NAME = "orca-ai-assistant"
 PLUGIN_DISPLAY_NAME = "Orca AI Assistant"
-PLUGIN_VERSION = "3.0.1"
+PLUGIN_VERSION = "3.1.0"
 PLUGIN_AUTHOR = "Anton & Antigravity"
 PLUGIN_DESCRIPTION = (
-    "Multilingual (EN / UA / RU) interactive AI co-pilot for OrcaSlicer 2.5+: "
+    "Multilingual (EN / UA / RU) interactive AI co-pilot & built-in MCP server for OrcaSlicer 2.5+: "
     "3D geometry & overhang analysis, deterministic Pre-Flight scorecard, "
     "multi-slot AMS awareness, Custom G-code diff & safety linter, "
     "1-click apply with Undo & Preset Snapshots, Defect & Calibration wizards, "
-    "and 13+ AI providers."
+    "13+ AI providers, and Streamable HTTP MCP control from Antigravity/Cursor/Claude."
 )
 
 ASSET_EXTENSIONS = {".svg", ".json", ".html", ".css", ".js"}

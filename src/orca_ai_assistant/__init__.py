@@ -46,7 +46,7 @@ from orca_ai_assistant.controller.controller import (
     load_asset,
     load_ui_html,
 )
-from orca_ai_assistant.core.constants import PLUGIN_ID, PLUGIN_VERSION
+from orca_ai_assistant.core.constants import MCP_DEFAULT_PORT, PLUGIN_ID, PLUGIN_VERSION
 from orca_ai_assistant.core.storage import get_plugin_storage_dir
 
 
@@ -90,24 +90,24 @@ _NETWORK_HTTP_HOSTS: list[str] = [
     "http://127.0.0.1",
 ]
 
-_CONFIG_UI_HTML = """<!DOCTYPE html>
+_CONFIG_UI_HTML = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <style>
-  :root {
+  :root {{
     color-scheme: dark light;
-  }
-  body {
+  }}
+  body {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
     margin: 0;
     padding: 14px 16px;
     background: var(--orca-bg, #181c20);
     color: var(--orca-fg, #e6edf3);
-  }
-  h3 { margin: 0 0 10px 0; font-size: 15px; }
-  .item {
+  }}
+  h3 {{ margin: 0 0 10px 0; font-size: 15px; }}
+  .item {{
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -115,11 +115,11 @@ _CONFIG_UI_HTML = """<!DOCTYPE html>
     padding: 10px;
     border-radius: 8px;
     background: rgba(127, 127, 127, 0.1);
-  }
-  .item input[type="checkbox"] { margin-top: 2px; }
-  .desc { display: block; font-size: 12px; opacity: 0.78; margin-top: 3px; }
-  .actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-  button {
+  }}
+  .item input[type="checkbox"] {{ margin-top: 2px; }}
+  .desc {{ display: block; font-size: 12px; opacity: 0.78; margin-top: 3px; }}
+  .actions {{ display: flex; align-items: center; gap: 10px; margin-top: 14px; }}
+  button {{
     padding: 6px 14px;
     border-radius: 6px;
     border: none;
@@ -127,13 +127,13 @@ _CONFIG_UI_HTML = """<!DOCTYPE html>
     color: #fff;
     font-weight: 600;
     cursor: pointer;
-  }
-  button:hover { opacity: 0.92; }
-  #status { font-size: 12px; opacity: 0.85; }
+  }}
+  button:hover {{ opacity: 0.92; }}
+  #status {{ font-size: 12px; opacity: 0.85; }}
 </style>
 </head>
 <body>
-  <h3>Orca AI Assistant v3.0.0</h3>
+  <h3>Orca AI Assistant v{PLUGIN_VERSION}</h3>
   <label class="item">
     <input type="checkbox" id="preflight_notifications" />
     <span>
@@ -155,24 +155,24 @@ _CONFIG_UI_HTML = """<!DOCTYPE html>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-let currentCfg = { preflight_notifications: true, enable_slicing_audit: false };
-if (window.orca && typeof window.orca.onConfig === "function") {
-  window.orca.onConfig((cfg) => {
-    currentCfg = Object.assign({}, currentCfg, cfg || {});
+let currentCfg = {{ preflight_notifications: true, enable_slicing_audit: false }};
+if (window.orca && typeof window.orca.onConfig === "function") {{
+  window.orca.onConfig((cfg) => {{
+    currentCfg = Object.assign({{}}, currentCfg, cfg || {{}});
     $("preflight_notifications").checked = currentCfg.preflight_notifications !== false;
     $("enable_slicing_audit").checked = !!currentCfg.enable_slicing_audit;
-  });
-}
-$("saveBtn").addEventListener("click", () => {
-  const next = Object.assign({}, currentCfg, {
+  }});
+}}
+$("saveBtn").addEventListener("click", () => {{
+  const next = Object.assign({{}}, currentCfg, {{
     preflight_notifications: $("preflight_notifications").checked,
     enable_slicing_audit: $("enable_slicing_audit").checked,
-  });
-  if (window.orca && typeof window.orca.saveConfig === "function") {
+  }});
+  if (window.orca && typeof window.orca.saveConfig === "function") {{
     window.orca.saveConfig(next);
-  }
+  }}
   $("status").textContent = "Saved";
-});
+}});
 </script>
 </body>
 </html>
@@ -219,6 +219,7 @@ if _PAGES_BASE is not None:
             ctrl = get_controller()
             ctrl.register_page(self)
             self._sync_native_config(ctrl)
+            ctrl.sync_mcp_server(emit_update=False)
             return load_ui_html(view_mode="page")
 
         def get_icon(self) -> str:
@@ -257,7 +258,10 @@ if _PAGES_BASE is not None:
 
         def on_unload(self) -> None:
             try:
-                get_controller().unregister_page(self)
+                ctrl = get_controller()
+                ctrl.unregister_page(self)
+                if not ctrl.has_open_views():
+                    ctrl.shutdown_mcp_server()
             except Exception:
                 pass
 else:
@@ -313,8 +317,17 @@ if orca is not None and hasattr(orca, "plugin") and hasattr(orca, "base"):
 
         def register_capabilities(self) -> None:
             try:
+                ctrl = get_controller()
+                mcp_port = int((ctrl.storage.get_settings() or {}).get("mcp_port") or MCP_DEFAULT_PORT)
+            except Exception:
+                mcp_port = MCP_DEFAULT_PORT
+            socket_grants = [f"('127.0.0.1', {MCP_DEFAULT_PORT})"]
+            if mcp_port != MCP_DEFAULT_PORT and 1024 <= mcp_port <= 65535:
+                socket_grants.append(f"('127.0.0.1', {mcp_port})")
+            try:
                 orca.request_permissions(
                     network_http=_NETWORK_HTTP_HOSTS,
+                    network_socket=socket_grants,
                     threading=True,
                 )
             except Exception:

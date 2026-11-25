@@ -1840,6 +1840,363 @@ console.log("MARKDOWN_JS_OK");
 
 
 # ============================================================================
+# 6B. Built-in Local MCP Server (Streamable HTTP JSON-RPC 2.0)
+# ============================================================================
+
+class TestBuiltInMCPServer(unittest.TestCase):
+    def _http_call(
+        self,
+        port: int,
+        method: str,
+        path: str,
+        body: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], str]:
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            hdrs = dict(headers or {})
+            raw_body: bytes | None = None
+            if body is not None:
+                if isinstance(body, (dict, list)):
+                    raw_body = json.dumps(body).encode("utf-8")
+                    hdrs.setdefault("Content-Type", "application/json")
+                elif isinstance(body, bytes):
+                    raw_body = body
+                else:
+                    raw_body = str(body).encode("utf-8")
+            conn.request(method, path, body=raw_body, headers=hdrs)
+            resp = conn.getresponse()
+            data = resp.read().decode("utf-8", errors="replace")
+            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+            return resp.status, resp_headers, data
+        finally:
+            conn.close()
+
+    def test_mcp_http_protocol_security_and_live_tools(self) -> None:
+        from orca_ai_assistant.mcp.server import OrcaMCPServer
+
+        env = FakeOrcaEnvironment()
+        with (
+            mock.patch("orca_ai_assistant.orca_bridge.presets.orca", env.orca),
+            mock.patch("orca_ai_assistant.orca_bridge.geometry.orca", env.orca),
+            mock.patch("orca_ai_assistant.controller.controller.orca", env.orca),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            storage = StorageManager(storage_dir=td)
+            token = storage.ensure_mcp_token()
+            storage.update_settings({
+                "mcp_enabled": True,
+                "mcp_require_auth": True,
+                "mcp_allow_write": True,
+                "mcp_allow_gcode_write": True,
+            })
+            ctrl = AssistantController(storage=storage)
+            srv = OrcaMCPServer(ctrl, host="127.0.0.1", port=0)
+            self.assertTrue(srv.start(), srv.last_error)
+            try:
+                port = srv.actual_port
+                self.assertGreater(port, 0)
+
+                # 1. /health succeeds without leaking token
+                st, _, body = self._http_call(port, "GET", "/health")
+                self.assertEqual(st, 200)
+                health = json.loads(body)
+                self.assertTrue(health["ok"])
+                self.assertEqual(health["version"], PLUGIN_VERSION)
+                self.assertNotIn(token, body)
+
+                # 2. DNS rebinding Host & Origin checks -> 403
+                st, _, _ = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    headers={"Host": "evil.example:18765", "Authorization": f"Bearer {token}"},
+                )
+                self.assertEqual(st, 403)
+
+                st, _, _ = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    headers={"Origin": "https://evil.example", "Authorization": f"Bearer {token}"},
+                )
+                self.assertEqual(st, 403)
+
+                # 3. Missing / wrong Bearer token -> 401
+                st, _, _ = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                )
+                self.assertEqual(st, 401)
+
+                st, _, _ = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    headers={"Authorization": "Bearer wrong_token"},
+                )
+                self.assertEqual(st, 401)
+
+                auth = {"Authorization": f"Bearer {token}"}
+
+                # 4. initialize + notifications/initialized + ping
+                st, hdrs, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2025-03-26", "clientInfo": {"name": "test-client", "version": "1.0"}},
+                    },
+                    headers=auth,
+                )
+                self.assertEqual(st, 200)
+                self.assertIn("mcp-session-id", hdrs)
+                init_res = json.loads(body)["result"]
+                self.assertEqual(init_res["protocolVersion"], "2025-03-26")
+                self.assertEqual(init_res["serverInfo"]["version"], PLUGIN_VERSION)
+
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    headers=auth,
+                )
+                self.assertEqual(st, 202)
+                self.assertEqual(body, "")
+
+                st, _, _ = self._http_call(port, "GET", "/mcp", headers=auth)
+                self.assertEqual(st, 405)
+
+                # 5. tools/list has all 11 tools & resources/list has 4 resources
+                st, _, body = self._http_call(
+                    port, "POST", "/mcp", body={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, headers=auth
+                )
+                self.assertEqual(st, 200)
+                tools = {t["name"] for t in json.loads(body)["result"]["tools"]}
+                self.assertEqual(len(tools), 11)
+                self.assertIn("apply_settings", tools)
+                self.assertIn("set_custom_gcode", tools)
+                self.assertIn("undo_last_apply", tools)
+
+                st, _, body = self._http_call(
+                    port, "POST", "/mcp", body={"jsonrpc": "2.0", "id": 3, "method": "resources/list"}, headers=auth
+                )
+                self.assertEqual(st, 200)
+                res_uris = {r["uri"] for r in json.loads(body)["result"]["resources"]}
+                self.assertEqual(
+                    res_uris,
+                    {"orca://scene/context", "orca://presets/current", "orca://preflight/scorecard", "orca://gcode/last_slice"},
+                )
+
+                # 6. Read setting & resource
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {"name": "get_setting", "arguments": {"keys": ["layer_height", "nozzle_temperature"], "slot": 2}},
+                    },
+                    headers=auth,
+                )
+                self.assertEqual(st, 200)
+                get_res = json.loads(body)["result"]["structuredContent"]
+                self.assertTrue(get_res["ok"])
+                self.assertEqual(get_res["values"]["layer_height"], "0.2")
+                self.assertEqual(get_res["values"]["nozzle_temperature"], "245")
+
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 5, "method": "resources/read", "params": {"uri": "orca://scene/context"}},
+                    headers=auth,
+                )
+                self.assertEqual(st, 200)
+                ctx_text = json.loads(body)["result"]["contents"][0]["text"]
+                self.assertIn("Bambu Lab X1C", ctx_text)
+
+                # 7. apply_settings + native notification + undo_last_apply
+                notif_before = len(env.notifications)
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 6,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "apply_settings",
+                            "arguments": {"changes": [{"key": "sparse_infill_pattern", "value": "cross_hatch"}]},
+                        },
+                    },
+                    headers=auth,
+                )
+                self.assertEqual(st, 200)
+                app_res = json.loads(body)["result"]["structuredContent"]
+                self.assertTrue(app_res["ok"], app_res)
+                self.assertEqual(env.process_values["sparse_infill_pattern"], "crosshatch")
+                self.assertGreater(len(env.notifications), notif_before)
+
+                # Reject custom G-code inside apply_settings
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "apply_settings",
+                            "arguments": {"changes": [{"key": "machine_end_gcode", "value": "M104 S0"}]},
+                        },
+                    },
+                    headers=auth,
+                )
+                self.assertTrue(json.loads(body)["result"]["isError"])
+
+                # undo_last_apply restores gyroid
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "undo_last_apply", "arguments": {}}},
+                    headers=auth,
+                )
+                self.assertTrue(json.loads(body)["result"]["structuredContent"]["ok"])
+                self.assertEqual(env.process_values["sparse_infill_pattern"], "gyroid")
+
+                # 8. set_custom_gcode blocks danger without force, applies safe G-code with diff
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 9,
+                        "method": "tools/call",
+                        "params": {"name": "set_custom_gcode", "arguments": {"key": "machine_end_gcode", "gcode": ""}},
+                    },
+                    headers=auth,
+                )
+                gc_err = json.loads(body)["result"]
+                self.assertTrue(gc_err["isError"])
+                self.assertTrue(gc_err["structuredContent"]["blocked_by_linter"])
+
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={
+                        "jsonrpc": "2.0",
+                        "id": 10,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "set_custom_gcode",
+                            "arguments": {"key": "machine_end_gcode", "gcode": "M104 S0\nM140 S0\nM84"},
+                        },
+                    },
+                    headers=auth,
+                )
+                gc_ok = json.loads(body)["result"]["structuredContent"]
+                self.assertTrue(gc_ok["ok"], gc_ok)
+                self.assertIn("+M84", gc_ok["diff"])
+
+                # 9. manage_snapshots save/list/restore/delete + show_notification
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "manage_snapshots", "arguments": {"action": "save", "name": "MCP Snap"}}},
+                    headers=auth,
+                )
+                snap_id = json.loads(body)["result"]["structuredContent"]["snapshots"][0]["id"]
+                self.assertTrue(snap_id)
+
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "show_notification", "arguments": {"message": "MCP hello", "level": "info"}}},
+                    headers=auth,
+                )
+                self.assertTrue(json.loads(body)["result"]["structuredContent"]["displayed_native"])
+
+                # 10. Read-only & G-code write toggles enforce permissions
+                storage.update_settings({"mcp_allow_gcode_write": False})
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "set_custom_gcode", "arguments": {"key": "machine_end_gcode", "gcode": "M104 S0\nM140 S0"}}},
+                    headers=auth,
+                )
+                self.assertTrue(json.loads(body)["result"]["isError"])
+
+                storage.update_settings({"mcp_allow_write": False})
+                st, _, body = self._http_call(
+                    port,
+                    "POST",
+                    "/mcp",
+                    body={"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "apply_settings", "arguments": {"changes": [{"key": "wall_loops", "value": "4"}]}}},
+                    headers=auth,
+                )
+                self.assertTrue(json.loads(body)["result"]["isError"])
+            finally:
+                srv.stop()
+                self.assertFalse(srv.is_running)
+
+    def test_controller_mcp_lifecycle_and_token_regeneration(self) -> None:
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            free_port = int(probe.getsockname()[1])
+
+        with tempfile.TemporaryDirectory() as td:
+            storage = StorageManager(storage_dir=td)
+            ctrl = AssistantController(storage=storage)
+            view = RecordingView()
+            ctrl.register_page(view)
+            try:
+                status0 = ctrl.sync_mcp_server(emit_update=False)
+                self.assertFalse(status0["running"])
+
+                ctrl.handle_message_on_ui({
+                    "action": "save_settings",
+                    "settings": {"mcp_enabled": True, "mcp_port": free_port},
+                }, source_view=view)
+                st_after_save = ctrl.get_mcp_status()
+                self.assertTrue(st_after_save["enabled"])
+                self.assertTrue(st_after_save["running"])
+                self.assertEqual(st_after_save["port"], free_port)
+                self.assertTrue(st_after_save["token"].startswith("orca_mcp_"))
+
+                old_tok = st_after_save["token"]
+                ctrl.handle_message_on_ui({"action": "mcp_regenerate_token"}, source_view=view)
+                new_tok = ctrl.get_mcp_status()["token"]
+                self.assertNotEqual(old_tok, new_tok)
+                self.assertTrue(any(m.get("type") == "mcp_status_updated" for m in view.messages))
+            finally:
+                ctrl.shutdown_mcp_server()
+
+
+# ============================================================================
 # 7. Final Single-File Bundle Gates
 # ============================================================================
 
@@ -1892,9 +2249,12 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 assert mod.PLUGIN_VERSION == "{PLUGIN_VERSION}"
+import orca_ai_assistant.mcp.server as mcp_srv
+assert hasattr(mcp_srv, "OrcaMCPServer")
 plugin = mod.OrcaAIAssistantPlugin()
 plugin.register_capabilities()
 assert len(registered_caps) == 3, len(registered_caps)
+assert requested_perms and "network_socket" in requested_perms[0], requested_perms
 
 page = registered_caps[0]()
 dock_script = registered_caps[1]()
