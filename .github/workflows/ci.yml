@@ -56,14 +56,16 @@ jobs:
         run: |
           python -I - <<'PY'
           import importlib.util
+          import tomllib
           from pathlib import Path
 
+          expected_ver = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
           bundle_path = Path("orca_ai_assistant_any.py").resolve()
           spec = importlib.util.spec_from_file_location("orca_ai_assistant_any", bundle_path)
           mod = importlib.util.module_from_spec(spec)
           assert spec is not None and spec.loader is not None
           spec.loader.exec_module(mod)
-          assert getattr(mod, "PLUGIN_VERSION", "") == "3.0.0"
+          assert getattr(mod, "PLUGIN_VERSION", "") == expected_ver, (getattr(mod, "PLUGIN_VERSION", ""), expected_ver)
           html = mod.load_ui_html("dock")
           assert 'data-view="dock"' in html
           print("OK isolated bundle import:", mod.PLUGIN_VERSION, len(html), "bytes HTML")

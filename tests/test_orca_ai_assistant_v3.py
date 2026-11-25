@@ -1891,7 +1891,7 @@ spec = importlib.util.spec_from_file_location("orca_ai_assistant_any", r"{bundle
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.PLUGIN_VERSION == "3.0.1"
+assert mod.PLUGIN_VERSION == "{PLUGIN_VERSION}"
 plugin = mod.OrcaAIAssistantPlugin()
 plugin.register_capabilities()
 assert len(registered_caps) == 3, len(registered_caps)
