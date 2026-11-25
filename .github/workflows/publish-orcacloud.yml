@@ -17,6 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify single-file bundle is up to date and compiles
+        run: |
+          python scripts/build_singlefile.py --check
+          python -m py_compile orca_ai_assistant_any.py
+
       - name: Publish release to OrcaCloud
         run: |
           set -euo pipefail

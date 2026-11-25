@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en" data-view="__VIEW_MODE__">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title data-i18n="app_title">Orca AI Assistant</title>
+<style>/* __INLINE_CSS__ */</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- ==================== COMPACT 1-ROW DOCK / NARROW HEADER ==================== -->
+  <header class="dock-header" id="dockHeader">
+    <div class="dock-header-left">
+      <button class="btn btn-primary btn-icon" id="btnDockNewChat" onclick="createNewChat()" data-i18n-title="tip_new_chat">➕</button>
+      <button class="btn btn-icon" id="btnDockHistory" onclick="toggleHistoryDrawer()" data-i18n-title="tip_chat_history">☰</button>
+      <button class="dock-model-pill" id="dockModelPill" onclick="toggleKeyDrawer()" data-i18n-title="tip_model_drawer">
+        <span class="key-dot missing" id="dockKeyDot"></span>
+        <span class="dock-model-label" id="dockModelLabel">...</span>
+      </button>
+      <button class="pf-pill pf-ok" id="dockPreflightPill" onclick="switchTab('preflight')" data-i18n-title="tip_preflight_badge">🟢 100</button>
+    </div>
+    <div class="dock-header-right">
+      <div class="dock-tabs">
+        <button class="btn btn-icon btn-primary" id="dockTabBtn-chat" onclick="switchTab('chat')" data-i18n-title="tip_tab_chat">💬</button>
+        <button class="btn btn-icon" id="dockTabBtn-preflight" onclick="switchTab('preflight')" data-i18n-title="tip_tab_preflight">🛡</button>
+        <button class="btn btn-icon" id="dockTabBtn-wizards" onclick="switchTab('wizards')" data-i18n-title="tip_tab_wizards">🔧</button>
+        <button class="btn btn-icon" id="dockTabBtn-inspector" onclick="switchTab('inspector')" data-i18n-title="tip_tab_inspector">📊</button>
+        <button class="btn btn-icon" id="dockTabBtn-settings" onclick="switchTab('settings')" data-i18n-title="tip_tab_settings">⚙️</button>
+      </div>
+      <select id="dockLangSelect" class="lang-select lang-select-compact" onchange="onChangeLanguage(this.value)" data-i18n-title="tip_lang_select">
+        <option value="ru">RU</option>
+        <option value="uk">UA</option>
+        <option value="en">EN</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- ==================== FULL PAGE HEADER (DESKTOP PAGE TAB) ==================== -->
+  <header class="model-bar" id="pageHeader">
+    <div class="model-bar-left">
+      <label for="topProviderSelect" data-i18n="lbl_provider"></label>
+      <select id="topProviderSelect" class="ctrl-select" onchange="onTopProviderChange()"></select>
+
+      <label for="topModelSelect" data-i18n="lbl_model"></label>
+      <select id="topModelSelect" class="ctrl-select model-select-wide" onchange="onTopModelSelectChange()"></select>
+
+      <input id="topModelCustomInput" class="ctrl-input model-input-custom" data-i18n-placeholder="ph_custom_model" onchange="onTopCustomModelInput()" />
+
+      <button class="btn btn-sm btn-warn" id="btnToggleKeyDrawer" onclick="toggleKeyDrawer()"></button>
+      <button class="btn btn-sm" onclick="fetchModelsFromApi()" id="btnFetchModels" data-i18n="btn_fetch_api"></button>
+      <button class="btn btn-sm" onclick="addCurrentToFavorites()" data-i18n="btn_add_fav"></button>
+    </div>
+
+    <div class="model-bar-right">
+      <button class="pf-pill pf-ok" id="pagePreflightPill" onclick="switchTab('preflight')" data-i18n-title="tip_preflight_badge">🟢 100</button>
+      <select id="topLangSelect" class="lang-select" onchange="onChangeLanguage(this.value)" data-i18n-title="tip_lang_select">
+        <option value="ru">🇷🇺 RU</option>
+        <option value="uk">🇺🇦 UA</option>
+        <option value="en">🇬🇧 EN</option>
+      </select>
+      <button class="btn btn-sm btn-primary" id="tabBtn-chat" onclick="switchTab('chat')" data-i18n="tab_chat"></button>
+      <button class="btn btn-sm" id="tabBtn-preflight" onclick="switchTab('preflight')" data-i18n="tab_preflight"></button>
+      <button class="btn btn-sm" id="tabBtn-wizards" onclick="switchTab('wizards')" data-i18n="tab_wizards"></button>
+      <button class="btn btn-sm" id="tabBtn-inspector" onclick="switchTab('inspector')" data-i18n="tab_inspector"></button>
+      <button class="btn btn-sm" id="tabBtn-settings" onclick="switchTab('settings')" data-i18n="tab_settings"></button>
+      <button class="btn btn-sm" id="btnOpenDock" onclick="sendAction('open_dock')" data-i18n="btn_dock"></button>
+    </div>
+  </header>
+
+  <!-- ==================== INLINE MODEL & API KEY DRAWER ==================== -->
+  <div class="inline-key-drawer" id="inlineKeyDrawer">
+    <div class="key-drawer-help" id="inlineKeyStatusText">
+      <span id="inlineKeyStatusMsg"></span>
+      <div class="drawer-head-actions">
+        <button class="btn btn-sm" onclick="sendAction('import_printpurr')" data-i18n="btn_import_pp"></button>
+        <button class="btn btn-sm" onclick="toggleKeyDrawer(false); switchTab('settings')" data-i18n="btn_open_mgr"></button>
+        <button class="btn btn-sm btn-danger" onclick="toggleKeyDrawer(false)" data-i18n="btn_hide"></button>
+      </div>
+    </div>
+
+    <!-- Dock-only compact provider & model picker inside drawer -->
+    <div class="dock-drawer-model-controls" id="dockDrawerModelControls">
+      <div class="key-drawer-row">
+        <label for="dockProviderSelect" data-i18n="lbl_provider"></label>
+        <select id="dockProviderSelect" class="ctrl-select flex-1" onchange="onDockProviderChange()"></select>
+      </div>
+      <div class="key-drawer-row">
+        <label for="dockModelSelect" data-i18n="lbl_model"></label>
+        <select id="dockModelSelect" class="ctrl-select flex-1" onchange="onDockModelSelectChange()"></select>
+      </div>
+      <div class="key-drawer-row">
+        <input id="dockModelCustomInput" class="ctrl-input flex-1" data-i18n-placeholder="ph_custom_model" onchange="onDockCustomModelInput()" />
+        <button class="btn btn-sm" onclick="fetchModelsFromApi()" data-i18n="btn_fetch_api"></button>
+        <button class="btn btn-sm" onclick="addCurrentToFavorites()" data-i18n="btn_add_fav"></button>
+      </div>
+      <div class="dock-fav-row" id="dockFavBar"></div>
+    </div>
+
+    <div class="key-drawer-row">
+      <label for="inlineKeyScope" class="key-scope-lbl" data-i18n="lbl_key_scope"></label>
+      <select id="inlineKeyScope" class="ctrl-select" onchange="syncInlineKeyBar()">
+        <option value="provider" data-i18n="opt_scope_provider"></option>
+        <option value="model" data-i18n="opt_scope_model"></option>
+      </select>
+
+      <label for="inlineApiKeyInput" data-i18n="lbl_api_key"></label>
+      <input type="password" id="inlineApiKeyInput" class="ctrl-input key-input-grow" placeholder="sk-ant-... / sk-... / AIza..." />
+      <button class="btn btn-sm" onclick="toggleKeyVisibility('inlineApiKeyInput')" data-i18n-title="tip_toggle_key_vis">👁</button>
+
+      <label for="inlineBaseUrlInput" data-i18n="lbl_server_url"></label>
+      <input type="text" id="inlineBaseUrlInput" class="ctrl-input url-input-med" placeholder="https://..." />
+
+      <button class="btn btn-sm btn-primary" onclick="saveInlineKeyAndFetch(false)" data-i18n="btn_save_key"></button>
+      <button class="btn btn-sm btn-ok" onclick="saveInlineKeyAndFetch(true)" data-i18n="btn_save_and_fetch"></button>
+    </div>
+    <div class="hint-text" id="inlineProviderHint"></div>
+  </div>
+
+  <!-- ==================== FAVORITES BAR (PAGE MODE) ==================== -->
+  <div class="fav-bar" id="favModelsBar"></div>
+
+  <!-- ==================== CHAT HISTORY DRAWER (DOCK / NARROW MODE) ==================== -->
+  <div class="drawer-backdrop" id="historyDrawerBackdrop" onclick="toggleHistoryDrawer(false)"></div>
+  <aside class="history-drawer" id="historyDrawer">
+    <div class="history-drawer-head">
+      <span class="history-drawer-title" data-i18n="lbl_chat_history"></span>
+      <button class="btn btn-sm btn-danger" onclick="toggleHistoryDrawer(false)" data-i18n="btn_hide"></button>
+    </div>
+    <div class="sidebar-head">
+      <button class="btn btn-primary btn-sm flex-1" onclick="createNewChat(); toggleHistoryDrawer(false);" data-i18n="btn_new_chat"></button>
+      <button class="btn btn-danger btn-sm" onclick="clearCurrentChat(); toggleHistoryDrawer(false);" data-i18n-title="tip_clear_chat">🗑</button>
+    </div>
+    <div class="session-list" id="drawerSessionList"></div>
+  </aside>
+
+  <!-- ==================== TAB 1: CHAT ==================== -->
+  <main class="tab-view active" id="view-chat">
+    <div class="chat-layout">
+      <aside class="chat-sidebar">
+        <div class="sidebar-head">
+          <button class="btn btn-primary btn-sm flex-1" onclick="createNewChat()" data-i18n="btn_new_chat"></button>
+          <button class="btn btn-danger btn-sm" onclick="clearCurrentChat()" data-i18n-title="tip_clear_chat">🗑</button>
+        </div>
+        <div class="session-list" id="sessionList"></div>
+      </aside>
+
+      <section class="chat-main" id="chatDropZone">
+        <div class="drop-overlay" id="dropOverlay">
+          <div class="drop-overlay-box" data-i18n="drop_hint"></div>
+        </div>
+
+        <div class="context-strip">
+          <div class="context-badges" id="contextBadges"></div>
+          <div class="context-toggles">
+            <button class="btn btn-sm" onclick="sendAction('refresh_context')" data-i18n="btn_refresh_plate" data-i18n-title="tip_refresh_plate"></button>
+            <label class="ctx-chk" data-i18n-title="tip_auto_ctx">
+              <input type="checkbox" id="chkAutoContext" checked onchange="saveQuickToggle()" />
+              <span data-i18n="chk_auto_ctx"></span>
+            </label>
+            <label class="ctx-chk ctx-chk-gcode" data-i18n-title="tip_include_gcode">
+              <input type="checkbox" id="chkIncludeGcode" onchange="saveQuickToggle()" />
+              <span data-i18n="chk_include_gcode"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="messages-area" id="messagesArea"></div>
+
+        <div class="quick-actions">
+          <button class="q-btn" onclick="runQuickPrompt('full_audit')" data-i18n="q_full_audit"></button>
+          <button class="q-btn" onclick="runQuickPrompt('orientation_supports')" data-i18n="q_supports"></button>
+          <button class="q-btn" onclick="runQuickPrompt('strength_functional')" data-i18n="q_strength"></button>
+          <button class="q-btn" onclick="runQuickPrompt('quality_surface')" data-i18n="q_quality"></button>
+          <button class="q-btn" onclick="runQuickPrompt('speed_optimize')" data-i18n="q_speed"></button>
+          <button class="q-btn" onclick="runQuickPrompt('filament_check')" data-i18n="q_filament"></button>
+          <button class="q-btn q-btn-accent" id="btnAuditLastSlice" onclick="onAuditLastSliceClick()" data-i18n="q_audit_last_slice"></button>
+          <input type="file" id="gcodeFileInput" accept=".gcode,.gco,.g" style="display:none" onchange="onGcodeFilePicked(event)" />
+          <button class="q-btn" onclick="document.getElementById('gcodeFileInput').click()" data-i18n="q_gcode"></button>
+        </div>
+
+        <div class="composer">
+          <div class="slash-menu" id="slashMenu"></div>
+          <div class="attachment-bar" id="attachmentBar">
+            <div class="attachment-preview-wrap">
+              <img id="attachmentThumb" class="attachment-thumb" alt="" />
+              <span id="attachmentLabel"></span>
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="clearAttachment()" data-i18n="btn_remove_photo"></button>
+          </div>
+          <div class="composer-row">
+            <textarea id="chatInput" data-i18n-placeholder="ph_chat_input" onkeydown="onChatKeydown(event)" oninput="onChatInputChange()"></textarea>
+            <input type="file" id="photoInput" accept="image/*" style="display:none" onchange="onPhotoSelected(event, 'chat')" />
+            <button class="btn" onclick="document.getElementById('photoInput').click()" data-i18n="btn_photo" data-i18n-title="tip_photo"></button>
+            <button class="btn btn-primary" id="btnSend" onclick="onSendOrStopClick()" data-i18n="btn_send"></button>
+          </div>
+          <div class="composer-controls">
+            <span id="statusLine" class="status-line"></span>
+            <div class="effort-wrap">
+              <label for="chatEffortSelect" data-i18n="lbl_speed"></label>
+              <select id="chatEffortSelect" class="ctrl-select ctrl-select-compact" onchange="onEffortChange(this.value)">
+                <option value="none" data-i18n="eff_none"></option>
+                <option value="low" data-i18n="eff_low"></option>
+                <option value="medium" data-i18n="eff_med"></option>
+                <option value="high" data-i18n="eff_high"></option>
+                <option value="auto" data-i18n="eff_auto"></option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ==================== TAB 2: PRE-FLIGHT ==================== -->
+  <section class="tab-view" id="view-preflight">
+    <div class="scroll-page">
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="pf_title"></span>
+          <button class="btn btn-sm btn-primary" onclick="sendAction('refresh_context')" data-i18n="pf_btn_rescan"></button>
+        </div>
+        <div class="pf-hero" id="pfHero"></div>
+        <div class="pf-checks-list" id="pfChecksList"></div>
+      </div>
+
+      <div class="card" id="sliceMetricsCard">
+        <div class="card-title">
+          <span data-i18n="slice_card_title"></span>
+          <button class="btn btn-sm btn-primary" id="btnSliceCardAudit" onclick="onAuditLastSliceClick()" data-i18n="slice_btn_audit"></button>
+        </div>
+        <div id="sliceMetricsBody"></div>
+        <div id="sliceDeltaBox"></div>
+      </div>
+
+      <div class="card" id="amsSlotsCard">
+        <div class="card-title">
+          <span data-i18n="ams_card_title"></span>
+        </div>
+        <div id="amsSlotsBody"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: WIZARDS (DEFECT & CALIBRATION) ==================== -->
+  <section class="tab-view" id="view-wizards">
+    <div class="scroll-page">
+      <div class="subtab-bar">
+        <button class="btn btn-sm btn-primary" id="wizSub-defect" onclick="switchWizardSub('defect')" data-i18n="wiz_sub_defect"></button>
+        <button class="btn btn-sm" id="wizSub-calib" onclick="switchWizardSub('calib')" data-i18n="wiz_sub_calib"></button>
+      </div>
+
+      <!-- DEFECT TROUBLESHOOTER -->
+      <div class="wiz-panel active" id="wizPanel-defect">
+        <div class="card">
+          <div class="card-title">
+            <span data-i18n="def_title"></span>
+          </div>
+          <p class="hint-text wiz-intro" data-i18n="def_subtitle"></p>
+          <div class="defect-grid" id="defectGrid"></div>
+
+          <div class="form-group">
+            <label for="defectNotes" data-i18n="def_notes_lbl"></label>
+            <textarea id="defectNotes" class="ctrl-input wiz-textarea" data-i18n-placeholder="def_notes_ph"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label data-i18n="def_photo_lbl"></label>
+            <div class="wiz-photo-row">
+              <input type="file" id="defectPhotoInput" accept="image/*" style="display:none" onchange="onPhotoSelected(event, 'defect')" />
+              <button class="btn btn-sm" onclick="document.getElementById('defectPhotoInput').click()" data-i18n="def_photo_btn"></button>
+              <span class="hint-text" data-i18n="def_photo_hint"></span>
+            </div>
+            <div class="attachment-bar" id="defectAttachmentBar">
+              <div class="attachment-preview-wrap">
+                <img id="defectAttachmentThumb" class="attachment-thumb" alt="" />
+                <span id="defectAttachmentLabel"></span>
+              </div>
+              <button class="btn btn-danger btn-sm" onclick="clearDefectAttachment()" data-i18n="btn_remove_photo"></button>
+            </div>
+          </div>
+
+          <button class="btn btn-primary" id="btnRunDefectWizard" onclick="runDefectWizard()" data-i18n="def_btn_diagnose"></button>
+        </div>
+      </div>
+
+      <!-- CALIBRATION CO-PILOT -->
+      <div class="wiz-panel" id="wizPanel-calib">
+        <div class="card">
+          <div class="card-title">
+            <span data-i18n="cal_title"></span>
+          </div>
+          <p class="hint-text wiz-intro" data-i18n="cal_order_hint"></p>
+
+          <div class="warn-box cal-trap-box">
+            <strong data-i18n="cal_trap_title"></strong>
+            <div class="cal-trap-body" data-i18n="cal_trap_text"></div>
+          </div>
+
+          <div class="cal-controls-top">
+            <div class="form-group cal-slot-group">
+              <label for="calSlotSelect" data-i18n="cal_slot_lbl"></label>
+              <select id="calSlotSelect" class="ctrl-select" onchange="onCalSlotChange()"></select>
+            </div>
+          </div>
+
+          <div class="cal-stages-bar" id="calStagesBar"></div>
+          <div class="grid-2 cal-inputs-grid" id="calInputsBox"></div>
+
+          <div class="cal-actions-row">
+            <button class="btn btn-primary" onclick="runCalibrationCalc(false)" data-i18n="cal_btn_calc"></button>
+            <button class="btn btn-ok" onclick="runCalibrationCalc(true)" data-i18n="cal_btn_verify_ai"></button>
+          </div>
+
+          <div id="calResultBox" class="cal-result-box"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: INSPECTOR ==================== -->
+  <section class="tab-view" id="view-inspector">
+    <div class="scroll-page">
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="insp_plate_title"></span>
+          <button class="btn btn-sm btn-primary" onclick="sendAction('refresh_context')" data-i18n="btn_rescan_plate"></button>
+        </div>
+        <div id="inspectorWarnings"></div>
+        <div id="inspectorObjects"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="insp_gcode_title"></span>
+          <div class="card-title-actions">
+            <button class="btn btn-sm" onclick="copyCurrentGcodeTab()" data-i18n="btn_copy_code"></button>
+            <button class="btn btn-sm btn-primary" onclick="askAiAboutCustomGcode()" data-i18n="insp_gcode_ask_ai"></button>
+          </div>
+        </div>
+        <div class="gcode-tabs-bar" id="gcodeTabsBar"></div>
+        <div id="inspectorGcodeViewer"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="snap_title"></span>
+        </div>
+        <div class="snap-create-row">
+          <input type="text" id="snapNameInput" class="ctrl-input flex-1" data-i18n-placeholder="snap_name_ph" />
+          <button class="btn btn-sm btn-primary" onclick="savePresetSnapshot()" data-i18n="snap_btn_save"></button>
+        </div>
+        <div id="snapshotsList" class="snapshots-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="hist_title"></span>
+        </div>
+        <div id="applyHistoryList" class="history-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="insp_presets_title"></span>
+          <button class="btn btn-sm" onclick="switchTab('chat'); runQuickPrompt('full_audit')" data-i18n="btn_audit_these"></button>
+        </div>
+        <div id="inspectorDirtyDiff"></div>
+        <div id="inspectorPresets"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 5: SETTINGS ==================== -->
+  <section class="tab-view" id="view-settings">
+    <div class="scroll-page">
+      <div class="card">
+        <div class="card-title">
+          <span data-i18n="cfg_title_main"></span>
+          <div class="card-title-actions">
+            <button class="btn btn-sm" onclick="sendAction('import_printpurr')" data-i18n="btn_import_pp"></button>
+            <button class="btn btn-sm btn-primary" onclick="switchTab('chat')" data-i18n="btn_back_chat"></button>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <div class="form-group">
+              <label for="cfgLangSelect" data-i18n="cfg_lbl_lang"></label>
+              <select id="cfgLangSelect" class="ctrl-select" onchange="onChangeLanguage(this.value)">
+                <option value="ru">🇷🇺 Русский (Russian)</option>
+                <option value="uk">🇺🇦 Українська (Ukrainian)</option>
+                <option value="en">🇬🇧 English</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfgProvider" data-i18n="cfg_lbl_prov"></label>
+              <select id="cfgProvider" class="ctrl-select" onchange="onCfgProviderSelect()"></select>
+              <div class="hint-text" id="cfgProviderHint"></div>
+            </div>
+            <div class="form-group">
+              <label for="cfgBaseUrl" data-i18n="cfg_lbl_url"></label>
+              <input type="text" id="cfgBaseUrl" class="ctrl-input" placeholder="https://api.anthropic.com/v1" />
+            </div>
+            <div class="form-group" id="cfgProtocolGroup" style="display:none;">
+              <label for="cfgCustomProtocol" data-i18n="cfg_lbl_proto"></label>
+              <select id="cfgCustomProtocol" class="ctrl-select">
+                <option value="openai">OpenAI (/chat/completions)</option>
+                <option value="anthropic">Anthropic (/v1/messages)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfgApiKey" data-i18n="cfg_lbl_prov_key"></label>
+              <div class="input-with-btn">
+                <input type="password" id="cfgApiKey" class="ctrl-input flex-1" placeholder="sk-ant-... / sk-... / AIza..." />
+                <button class="btn btn-sm" onclick="toggleKeyVisibility('cfgApiKey')" data-i18n-title="tip_toggle_key_vis">👁</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="cfgModel" data-i18n="cfg_lbl_model"></label>
+              <input type="text" id="cfgModel" class="ctrl-input" placeholder="claude-sonnet-4-5" oninput="syncPerModelKeyInput()" />
+            </div>
+            <div class="form-group">
+              <label for="cfgModelSpecificKey" data-i18n="cfg_lbl_model_key"></label>
+              <div class="input-with-btn">
+                <input type="password" id="cfgModelSpecificKey" class="ctrl-input flex-1" data-i18n-placeholder="ph_model_key" />
+                <button class="btn btn-sm" onclick="toggleKeyVisibility('cfgModelSpecificKey')" data-i18n-title="tip_toggle_key_vis">👁</button>
+              </div>
+              <div class="hint-text" data-i18n="cfg_hint_model_key"></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" onclick="saveProviderConfig()" data-i18n="btn_save_cfg"></button>
+              <button class="btn btn-ok" onclick="saveProviderConfig(); fetchModelsFromApi();" data-i18n="btn_save_and_fetch"></button>
+            </div>
+          </div>
+
+          <div>
+            <div class="form-group">
+              <label for="modelFilterInput" data-i18n="cfg_lbl_browser"></label>
+              <input type="text" id="modelFilterInput" class="ctrl-input" data-i18n-placeholder="ph_search_model" oninput="renderModelsBrowser()" />
+            </div>
+            <div class="models-browser" id="modelsBrowser"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span data-i18n="cfg_fav_title"></span></div>
+        <div id="favManagerList" class="fav-manager-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span data-i18n="cfg_gen_title"></span></div>
+        <div class="grid-2">
+          <div>
+            <div class="form-group">
+              <label for="cfgTemperature" data-i18n="cfg_lbl_temp"></label>
+              <input type="number" step="0.05" min="0" max="1.5" id="cfgTemperature" class="ctrl-input" value="0.3" />
+            </div>
+            <div class="form-group">
+              <label for="cfgMaxTokens" data-i18n="cfg_lbl_tokens"></label>
+              <input type="number" step="256" min="512" max="32768" id="cfgMaxTokens" class="ctrl-input" value="4096" />
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgCompactContext" />
+                <span data-i18n="cfg_chk_compact"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgPreflightNotif" />
+                <span data-i18n="cfg_chk_preflight_notif"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="chk-row">
+                <input type="checkbox" id="cfgSlicingAudit" />
+                <span data-i18n="cfg_chk_slicing"></span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <div class="form-group">
+              <label for="cfgCustomInstructions" data-i18n="cfg_lbl_custom_instr"></label>
+              <textarea id="cfgCustomInstructions" class="ctrl-input cfg-custom-textarea" data-i18n-placeholder="ph_custom_instr"></textarea>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="saveProviderConfig()" data-i18n="btn_save_cfg"></button>
+      </div>
+
+      <div class="card" id="usageCard">
+        <div class="card-title"><span data-i18n="usage_title"></span></div>
+        <div id="usageMeterBody" class="grid-2"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="status-toast" id="statusToast"></div>
+
+<script>window.__LOCALES__ = __INLINE_LOCALES__;</script>
+<script>/* __INLINE_MARKDOWN_JS__ */</script>
+<script>/* __INLINE_APP_JS__ */</script>
+</body>
+</html>
