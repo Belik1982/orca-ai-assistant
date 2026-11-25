@@ -20,7 +20,7 @@ from pathlib import Path
 
 PLUGIN_NAME = "orca-ai-assistant"
 PLUGIN_DISPLAY_NAME = "Orca AI Assistant"
-PLUGIN_VERSION = "3.0.0"
+PLUGIN_VERSION = "3.0.1"
 PLUGIN_AUTHOR = "Anton & Antigravity"
 PLUGIN_DESCRIPTION = (
     "Multilingual (EN / UA / RU) interactive AI co-pilot for OrcaSlicer 2.5+: "

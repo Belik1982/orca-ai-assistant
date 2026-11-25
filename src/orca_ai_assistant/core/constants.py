@@ -4,7 +4,7 @@ import os
 from typing import Any
 
 PLUGIN_ID = "orca-ai-assistant"
-PLUGIN_VERSION = "3.0.0"
+PLUGIN_VERSION = "3.0.1"
 SUPPORTED_LANGUAGES = ("ru", "uk", "en")
 
 # Retired model IDs automatically migrated when loading settings (both active model and favorites)

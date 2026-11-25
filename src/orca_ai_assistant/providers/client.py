@@ -31,7 +31,7 @@ _KNOWN_ALLOWED_HOSTS: frozenset[str] = frozenset({
 })
 
 _STREAM_THROTTLE_SEC = 0.12
-_MAX_HTTP400_RETRIES = 3
+_MAX_HTTP400_RETRIES = 4
 _TRANSIENT_BACKOFF_SEC = 1.5
 
 
@@ -533,18 +533,33 @@ def send_chat_completion(
             "User-Agent": f"OrcaAIAssistant/{PLUGIN_VERSION}",
         }
         anth_messages = _sanitize_anthropic_messages(messages, image_attachment=image_attachment)
+        model_lower = clean_model.lower()
+        is_claude3 = model_lower.startswith("claude-3")
+        req_max_tokens = int(max_tokens or 4096)
         body: dict[str, Any] = {
             "model": clean_model,
-            "max_tokens": int(max_tokens or 4096),
+            "max_tokens": req_max_tokens,
             "messages": anth_messages,
         }
         if system_prompt:
             body["system"] = system_prompt
         if use_stream:
             body["stream"] = True
-        # Claude 3.x accepts temperature; newer Claude 4.7+/5.x/Fable may reject it (also guarded by 400 retry)
-        if clean_model.lower().startswith("claude-3"):
+        if is_claude3:
+            # Claude 3.x accepts temperature; newer Claude 4.7+/5.x/Fable may reject it (also guarded by 400 retry)
             body["temperature"] = float(temperature)
+        else:
+            # Modern Claude adaptive thinking shares max_tokens with output text and can consume all 4096 tokens
+            if clean_effort == "none":
+                body["thinking"] = {"type": "disabled"}
+            else:
+                if clean_effort in ("low", "medium", "high"):
+                    body["output_config"] = {"effort": clean_effort}
+                if clean_effort == "low":
+                    req_max_tokens = max(req_max_tokens, 8192)
+                else:
+                    req_max_tokens = max(req_max_tokens, 16384)
+            body["max_tokens"] = req_max_tokens
     else:
         url = f"{clean_base}/chat/completions"
         headers = {
@@ -622,6 +637,8 @@ def send_chat_completion(
 
             raw_non_sse: list[str] = []
             sse_error = ""
+            stop_reason = ""
+            saw_thinking_block = False
             last_chunk_emit = 0.0
             last_think_emit = 0.0
             emitted_text_len = 0
@@ -695,14 +712,19 @@ def send_chat_completion(
                         usage_in, usage_out = _extract_usage(msg_obj.get("usage"), usage_in, usage_out)
                     elif ev_type == "message_delta":
                         usage_in, usage_out = _extract_usage(ev.get("usage"), usage_in, usage_out)
+                        delta_sr = (ev.get("delta") or {}).get("stop_reason")
+                        if delta_sr:
+                            stop_reason = str(delta_sr)
                     elif ev_type == "content_block_start":
                         cb = ev.get("content_block") or {}
                         if cb.get("type") == "text" and cb.get("text"):
                             acc_text.append(str(cb.get("text") or ""))
                             text_added = True
-                        elif cb.get("type") == "thinking" and cb.get("thinking"):
-                            acc_reason.append(str(cb.get("thinking") or ""))
-                            think_added = True
+                        elif cb.get("type") == "thinking":
+                            saw_thinking_block = True
+                            if cb.get("thinking"):
+                                acc_reason.append(str(cb.get("thinking") or ""))
+                                think_added = True
                     elif ev_type == "content_block_delta":
                         delta = ev.get("delta") or {}
                         dtype = delta.get("type")
@@ -711,11 +733,13 @@ def send_chat_completion(
                             if piece:
                                 acc_text.append(piece)
                                 text_added = True
-                        elif dtype == "thinking_delta":
-                            piece = str(delta.get("thinking") or "")
-                            if piece:
-                                acc_reason.append(piece)
-                                think_added = True
+                        elif dtype in ("thinking_delta", "signature_delta"):
+                            saw_thinking_block = True
+                            if dtype == "thinking_delta":
+                                piece = str(delta.get("thinking") or "")
+                                if piece:
+                                    acc_reason.append(piece)
+                                    think_added = True
                 else:
                     if ev.get("usage"):
                         usage_in, usage_out = _extract_usage(ev.get("usage"), usage_in, usage_out)
@@ -783,6 +807,8 @@ def send_chat_completion(
                 "_reply": joined_text,
                 "_reasoning": joined_reason,
                 "_error": sse_error,
+                "_stop_reason": stop_reason,
+                "_saw_thinking": saw_thinking_block,
                 "_usage": {"input_tokens": usage_in, "output_tokens": usage_out},
             }
         finally:
@@ -813,7 +839,7 @@ def send_chat_completion(
             err_text = _extract_http_error_text(http_err)
             err_lower = err_text.lower()
 
-            # Multi-pass HTTP 400 compatibility retry (up to 3 passes)
+            # Multi-pass HTTP 400 compatibility retry (up to 4 passes)
             if http_err.code == 400 and http400_retries < _MAX_HTTP400_RETRIES:
                 changed = False
                 if "stream_options" in body and (
@@ -827,6 +853,25 @@ def send_chat_completion(
                     changed = True
                 if "temperature" in body and "temperature" in err_lower:
                     body.pop("temperature", None)
+                    changed = True
+                if "output_config" in body and (
+                    "output_config" in err_lower
+                    or "effort" in err_lower
+                    or "unknown" in err_lower
+                    or "unsupported" in err_lower
+                    or "unrecognized" in err_lower
+                    or "extra" in err_lower
+                ):
+                    body.pop("output_config", None)
+                    changed = True
+                if "thinking" in body and (
+                    "thinking" in err_lower
+                    or "unknown" in err_lower
+                    or "unsupported" in err_lower
+                    or "unrecognized" in err_lower
+                    or "extra" in err_lower
+                ):
+                    body.pop("thinking", None)
                     changed = True
                 if "reasoning_effort" in body and (
                     "reasoning" in err_lower
@@ -850,6 +895,12 @@ def send_chat_completion(
                 if not changed:
                     if "stream_options" in body:
                         body.pop("stream_options", None)
+                        changed = True
+                    elif "output_config" in body:
+                        body.pop("output_config", None)
+                        changed = True
+                    elif "thinking" in body:
+                        body.pop("thinking", None)
                         changed = True
                     elif "reasoning_effort" in body:
                         body.pop("reasoning_effort", None)
@@ -895,6 +946,51 @@ def send_chat_completion(
             "error": f"{api_err_prefix}: {parsed['_error']}",
             "partial_reply": partial,
         }
+
+    def _is_anthropic_thinking_exhausted(res: dict[str, Any]) -> bool:
+        if protocol != "anthropic" or not isinstance(res, dict):
+            return False
+        if res.get("_streamed"):
+            if str(res.get("_reply") or "").strip():
+                return False
+            return res.get("_stop_reason") == "max_tokens" or bool(res.get("_saw_thinking"))
+        has_text = any(
+            isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip()
+            for b in (res.get("content") or [])
+        )
+        if has_text:
+            return False
+        has_thinking_block = any(
+            isinstance(b, dict) and b.get("type") == "thinking"
+            for b in (res.get("content") or [])
+        )
+        return res.get("stop_reason") == "max_tokens" or has_thinking_block
+
+    if _is_anthropic_thinking_exhausted(parsed):
+        body.pop("stream", None)
+        body.pop("output_config", None)
+        headers["Accept"] = "application/json"
+        body["max_tokens"] = max(int(body.get("max_tokens") or 4096) * 2, 16384)
+        body["thinking"] = {"type": "disabled"}
+        try:
+            rec_parsed = _do_post(body)
+            if rec_parsed.get("_cancelled"):
+                return {"ok": False, "cancelled": True, "partial_reply": ""}
+            parsed = rec_parsed
+        except urllib.error.HTTPError as rec_err:
+            rec_err_text = _extract_http_error_text(rec_err).lower()
+            if rec_err.code == 400 and ("thinking" in rec_err_text or "disabled" in rec_err_text or "unsupported" in rec_err_text or "unknown" in rec_err_text):
+                body.pop("thinking", None)
+                body["output_config"] = {"effort": "low"}
+                try:
+                    rec_parsed2 = _do_post(body)
+                    if rec_parsed2.get("_cancelled"):
+                        return {"ok": False, "cancelled": True, "partial_reply": ""}
+                    parsed = rec_parsed2
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # Automatic non-stream fallback if SSE returned empty text with no error
     if (

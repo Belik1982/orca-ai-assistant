@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.1] - 2026-11-25
+### Fixed
+- **Anthropic Adaptive Thinking (`claude-opus-5-5` / 5.x / 4.7+)**: Passed `output_config.effort` (or `thinking: {"type": "disabled"}` for `"none"` mode), ensured automatic `max_tokens` headroom (8192 for `low`, 16384 for `medium`/`high`/`auto`) so hidden reasoning no longer exhausts a 4096-token budget, stripped rejected `output_config`/`thinking` cleanly on HTTP 400, and added automatic recovery retry when Anthropic returns an omitted-thinking-only / `max_tokens` response with empty text.
+
 ## [3.0.0] - 2026-11-25
 ### Added
 - **Modular Package Architecture & Deterministic Single-File Bundler**: Refactored the codebase into `src/orca_ai_assistant/` (`core/`, `providers/`, `orca_bridge/`, `controller/`, `assets/`, `ui/`) with `pyproject.toml`, `scripts/build_singlefile.py` (`--check` verified), and `.github/workflows/ci.yml`.

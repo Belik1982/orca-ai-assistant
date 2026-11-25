@@ -1652,6 +1652,158 @@ console.log("MARKDOWN_JS_OK");
         self.assertFalse(is_chat_model("whisper-1"))
         self.assertTrue(is_chat_model("claude-opus-5-5"))
 
+    def test_anthropic_adaptive_thinking_headroom_recovery_and_400_strip(self) -> None:
+        recorded_bodies: list[dict[str, Any]] = []
+
+        class ThinkingHandler(http.server.BaseHTTPRequestHandler):
+            mode = "sse_omitted_then_recover"
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode("utf-8"))
+                recorded_bodies.append(body)
+                call_idx = len(recorded_bodies)
+
+                if ThinkingHandler.mode == "sse_omitted_then_recover":
+                    if call_idx == 1:
+                        events = [
+                            {"type": "message_start", "message": {"usage": {"input_tokens": 500}}},
+                            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+                            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig_abc"}},
+                            {"type": "content_block_stop", "index": 0},
+                            {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 8192}},
+                            {"type": "message_stop"},
+                        ]
+                        payload = "".join(f"data: {json.dumps(ev)}\n\n" for ev in events).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        return
+                    resp = {
+                        "id": "msg_rec_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Recovered SSE answer"}],
+                        "usage": {"input_tokens": 500, "output_tokens": 25},
+                    }
+                elif ThinkingHandler.mode == "nonstream_omitted_then_recover":
+                    if call_idx == 1:
+                        resp = {
+                            "id": "msg_empty_think",
+                            "type": "message",
+                            "role": "assistant",
+                            "stop_reason": "max_tokens",
+                            "content": [{"type": "thinking", "thinking": "", "signature": "sig_only"}],
+                            "usage": {"input_tokens": 400, "output_tokens": 8192},
+                        }
+                    else:
+                        resp = {
+                            "id": "msg_rec_2",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Recovered non-stream answer"}],
+                            "usage": {"input_tokens": 400, "output_tokens": 30},
+                        }
+                else:  # reject_400_then_ok
+                    if call_idx == 1 and ("output_config" in body or "thinking" in body):
+                        err = {"error": {"message": "Extra inputs are not permitted: output_config, thinking"}}
+                        raw_err = json.dumps(err).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(raw_err)))
+                        self.end_headers()
+                        self.wfile.write(raw_err)
+                        return
+                    resp = {
+                        "id": "msg_ok_400",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Fallback OK after 400 strip"}],
+                        "usage": {"input_tokens": 100, "output_tokens": 15},
+                    }
+
+                raw_out = json.dumps(resp).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw_out)))
+                self.end_headers()
+                self.wfile.write(raw_out)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), ThinkingHandler)
+        port = srv.server_address[1]
+        thr = threading.Thread(target=srv.serve_forever, daemon=True)
+        thr.start()
+        try:
+            # A. SSE omitted thinking -> output_config.effort=low, max_tokens>=8192 -> recovers with thinking disabled + 16384
+            ThinkingHandler.mode = "sse_omitted_then_recover"
+            recorded_bodies.clear()
+            res_sse = send_chat_completion(
+                provider="anthropic",
+                base_url=f"http://127.0.0.1:{port}/v1",
+                api_key="sk-ant-test",
+                model_id="claude-opus-5-5",
+                messages=[{"role": "user", "content": "audit 49 parts"}],
+                system_prompt="sys",
+                max_tokens=4096,
+                reasoning_effort="low",
+                on_chunk=lambda _t: None,
+            )
+            self.assertTrue(res_sse["ok"], res_sse)
+            self.assertEqual(res_sse["reply"], "Recovered SSE answer")
+            self.assertEqual(len(recorded_bodies), 2)
+            self.assertEqual(recorded_bodies[0].get("output_config"), {"effort": "low"})
+            self.assertGreaterEqual(recorded_bodies[0]["max_tokens"], 8192)
+            self.assertEqual(recorded_bodies[1].get("thinking"), {"type": "disabled"})
+            self.assertNotIn("output_config", recorded_bodies[1])
+            self.assertGreaterEqual(recorded_bodies[1]["max_tokens"], 16384)
+
+            # B. Non-stream omitted thinking -> recovers cleanly
+            ThinkingHandler.mode = "nonstream_omitted_then_recover"
+            recorded_bodies.clear()
+            res_ns = send_chat_completion(
+                provider="anthropic",
+                base_url=f"http://127.0.0.1:{port}/v1",
+                api_key="sk-ant-test",
+                model_id="claude-opus-5-5",
+                messages=[{"role": "user", "content": "audit"}],
+                system_prompt="sys",
+                max_tokens=4096,
+                reasoning_effort="medium",
+            )
+            self.assertTrue(res_ns["ok"], res_ns)
+            self.assertEqual(res_ns["reply"], "Recovered non-stream answer")
+            self.assertEqual(recorded_bodies[0].get("output_config"), {"effort": "medium"})
+            self.assertGreaterEqual(recorded_bodies[0]["max_tokens"], 16384)
+            self.assertEqual(recorded_bodies[1].get("thinking"), {"type": "disabled"})
+
+            # C. effort="none" sends thinking.disabled; HTTP 400 rejecting thinking/output_config strips and succeeds
+            ThinkingHandler.mode = "reject_400_then_ok"
+            recorded_bodies.clear()
+            res_400 = send_chat_completion(
+                provider="anthropic",
+                base_url=f"http://127.0.0.1:{port}/v1",
+                api_key="sk-ant-test",
+                model_id="claude-opus-5-5",
+                messages=[{"role": "user", "content": "hello"}],
+                system_prompt="sys",
+                max_tokens=4096,
+                reasoning_effort="none",
+            )
+            self.assertTrue(res_400["ok"], res_400)
+            self.assertEqual(res_400["reply"], "Fallback OK after 400 strip")
+            self.assertEqual(recorded_bodies[0].get("thinking"), {"type": "disabled"})
+            self.assertNotIn("thinking", recorded_bodies[1])
+            self.assertNotIn("output_config", recorded_bodies[1])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
     def test_lifecycle_gcode_export_updates_slice_delta_and_notifications(self) -> None:
         env = FakeOrcaEnvironment()
         with tempfile.TemporaryDirectory() as td, \
@@ -1739,7 +1891,7 @@ spec = importlib.util.spec_from_file_location("orca_ai_assistant_any", r"{bundle
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-assert mod.PLUGIN_VERSION == "3.0.0"
+assert mod.PLUGIN_VERSION == "3.0.1"
 plugin = mod.OrcaAIAssistantPlugin()
 plugin.register_capabilities()
 assert len(registered_caps) == 3, len(registered_caps)
